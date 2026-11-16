@@ -16,8 +16,8 @@ SCENE_PREFIX = "scene-"
 def _fireplaces(states=None):
     """Napoleon fireplace climate entities with their current state.
 
-    Empty when the registry can't be read (e.g. the hub hasn't granted the
-    container ``ha.ws``), so the rest of the status/shortcuts still work.
+    Empty when the registry can't be read (e.g. the hub refused the
+    container ``ha.registry``), so the rest of the status/shortcuts still work.
     """
     try:
         registry = _napoleon_registry()

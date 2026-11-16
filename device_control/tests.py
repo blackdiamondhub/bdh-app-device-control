@@ -255,27 +255,35 @@ class FireplaceViewTests(TestCase):
 
     # ----- registry loading -----
 
-    @patch("device_control.views.ws_commands")
-    def test_registry_filters_to_napoleon(self, mock_ws):
-        mock_ws.return_value = [
-            [
+    @patch("device_control.views.get_registry")
+    def test_registry_filters_to_napoleon(self, mock_reg):
+        mock_reg.return_value = {
+            "entities": [
                 {"entity_id": "switch.lr_power", "device_id": "dev1", "platform": "napoleon",
-                 "translation_key": "fireplace_power", "disabled_by": None, "extra": 1},
+                 "translation_key": "fireplace_power", "disabled_by": None, "name": "x"},
                 {"entity_id": "switch.other", "device_id": "dev2", "platform": "hue",
                  "translation_key": None, "disabled_by": None},
                 {"entity_id": "switch.lr_off", "device_id": "dev1", "platform": "napoleon",
                  "translation_key": "eco_mode", "disabled_by": "user"},
             ],
-            [{"id": "dev1", "name": "Living Room", "name_by_user": "LR"}, {"id": "dev2", "name": "Hue"}],
-            {"unit_system": {"temperature": "°F"}},
-        ]
+            "devices": [{"id": "dev1", "name": "Living Room", "name_by_user": "LR", "model": "m"},
+                        {"id": "dev2", "name": "Hue"}],
+            "unit_system": {"temperature": "°F"},
+        }
         reg = views._napoleon_registry()
+        mock_reg.assert_called_once_with(platform="napoleon")
         self.assertEqual(list(reg["entities"]), ["switch.lr_power"])
-        self.assertNotIn("extra", reg["entities"]["switch.lr_power"])
-        self.assertEqual(list(reg["devices"]), ["dev1"])
+        self.assertNotIn("name", reg["entities"]["switch.lr_power"])
+        self.assertEqual(reg["devices"], {"dev1": {"id": "dev1", "name": "Living Room",
+                                                   "name_by_user": "LR"}})
         self.assertEqual(reg["config"]["unit_system"]["temperature"], "°F")
         views._napoleon_registry()
-        mock_ws.assert_called_once()  # cached
+        mock_reg.assert_called_once()  # cached
+
+    @patch("device_control.views.get_registry",
+           return_value={"entities": [], "devices": [], "unit_system": {}})
+    def test_registry_defaults_to_celsius(self, _):
+        self.assertEqual(views._napoleon_registry()["config"]["unit_system"]["temperature"], "°C")
 
     # ----- states endpoint -----
 
@@ -865,8 +873,31 @@ class BrokerTests(TestCase):
                                 content_type="application/json")
         self.assertEqual(resp.status_code, 502)
 
-    def test_without_ha_ws_status_and_scenes_still_work(self):
-        # ha.ws can't be requested in a manifest, so the fireplace registry is refused.
+    def test_fireplace_registry_comes_from_ha_registry(self):
+        self.broker.grants.append("ha.registry")
+        self.broker.registry = {
+            "entities": [
+                {"entity_id": "climate.living", "device_id": "d1", "platform": "napoleon",
+                 "translation_key": None, "disabled_by": None},
+                {"entity_id": "light.a", "device_id": "d2", "platform": "hue",
+                 "translation_key": None, "disabled_by": None},
+            ],
+            "devices": [{"id": "d1", "name": "Living", "name_by_user": None},
+                        {"id": "d2", "name": "Hue", "name_by_user": None}],
+            "unit_system": {"temperature": "°C"},
+        }
+        resp = self.client.get(reverse("device_control_fireplace_states"))
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(list(body["entities"]), ["climate.living"])
+        self.assertEqual(list(body["devices"]), ["d1"])
+        self.assertEqual(list(body["states"]), ["climate.living"])
+        (call,) = self.broker.ops("ha.registry")
+        self.assertEqual(call["platform"], "napoleon")
+        self.assertFalse(self.broker.ops("ha.ws_commands"))
+
+    def test_without_ha_registry_status_and_scenes_still_work(self):
+        # If the hub refuses ha.registry, only the fireplace card fails.
         from device_control.homepage import shortcuts, status
         self.assertEqual(status().text, "1 light on")
         self.assertEqual([s.id for s in shortcuts()], ["scene-movie"])

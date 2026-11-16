@@ -10,6 +10,7 @@ from bdh_sdk.ha import (  # noqa: F401
     get_entity_state,
     get_entity_states,
     get_history,
+    get_registry,
     get_static,
     ws_commands,
 )
