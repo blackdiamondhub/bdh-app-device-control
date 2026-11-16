@@ -1,17 +1,29 @@
+import logging
+
 from bdh_sdk import ALL_MODES, INFO, ON, Shortcut, Status
 
 from .device_config import TABS
-from .ha_client import call_service, get_all_states
+from .ha_client import HA_ERRORS, call_service, get_all_states
 from .scenes import activate_scene, get_scenes
 from .views import _napoleon_registry
+
+logger = logging.getLogger(__name__)
 
 FIREPLACES_OFF = "fireplaces_off"
 SCENE_PREFIX = "scene-"
 
 
 def _fireplaces(states=None):
-    """Napoleon fireplace climate entities with their current state."""
-    registry = _napoleon_registry()
+    """Napoleon fireplace climate entities with their current state.
+
+    Empty when the registry can't be read (e.g. the hub hasn't granted the
+    container ``ha.ws``), so the rest of the status/shortcuts still work.
+    """
+    try:
+        registry = _napoleon_registry()
+    except HA_ERRORS as exc:
+        logger.info("Fireplace registry unavailable: %s", exc)
+        return []
     climates = {
         eid for eid in registry["entities"] if eid.startswith("climate.")
     }

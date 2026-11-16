@@ -13,3 +13,7 @@ from bdh_sdk.ha import (  # noqa: F401
     get_static,
     ws_commands,
 )
+# In the container, a call the hub refused (no grant) raises BrokerError, not HAError.
+from bdh_sdk.rpc import BrokerError  # noqa: F401
+
+HA_ERRORS = (HAError, BrokerError)

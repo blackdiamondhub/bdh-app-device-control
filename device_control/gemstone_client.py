@@ -30,12 +30,16 @@ import logging
 import threading
 from typing import Any, Callable, Coroutine
 
+from bdh_sdk import secrets
 from bdh_sdk.settings import app_setting
 
 logger = logging.getLogger(__name__)
 
 # How long a sync caller will block on a coroutine submitted to the loop.
 _CALL_TIMEOUT = 25  # seconds
+
+# Per-request timeout for the Gemstone cloud (matches pygemstone's default).
+_HTTP_TIMEOUT = 30.0  # seconds
 
 # How many pages of saved patterns to pull when discovering the catalogue.
 _MAX_PATTERN_PAGES = 5
@@ -93,17 +97,21 @@ def _loop() -> _LoopThread:
 # These are only ever touched from coroutines running on the loop thread, so no
 # additional locking is required around them.
 _client: Any = None  # GemstoneClient
+_session: Any = None  # aiohttp.ClientSession we own (handed to the client)
 _devices: dict[str, Any] = {}  # device_id -> Device
 _patterns_by_id: dict[str, Any] = {}  # pattern_id -> Pattern (for replay)
 _patterns_ui: list[dict[str, Any]] = []  # JSON-friendly catalogue for the UI
 
 
 def _credentials() -> tuple[str, str]:
-    """Gemstone cloud login from BDH_DEVICE_CONTROL_GEMSTONE_* or GEMSTONE_*."""
-    return (
-        app_setting("device_control", "gemstone_email", "", legacy=("GEMSTONE_EMAIL",)),
-        app_setting("device_control", "gemstone_password", "", legacy=("GEMSTONE_PASSWORD",)),
-    )
+    """Gemstone cloud login: the ``gemstone_email`` setting and the
+    ``gemstone_password`` secret (an old plain setting still works), each
+    falling back to BDH_DEVICE_CONTROL_GEMSTONE_* or GEMSTONE_*."""
+    email = app_setting("device_control", "gemstone_email", "", legacy=("GEMSTONE_EMAIL",))
+    password = secrets.get(
+        "gemstone_password", app="device_control", legacy=("GEMSTONE_PASSWORD",)
+    ) or app_setting("device_control", "gemstone_password", "", legacy=("GEMSTONE_PASSWORD",))
+    return email, password
 
 
 def is_configured() -> bool:
@@ -137,7 +145,7 @@ def _color_to_hex(c: Any) -> str:
 
 async def _ensure_client() -> None:
     """Log in and discover devices + saved patterns if we have no live client."""
-    global _client, _devices, _patterns_by_id, _patterns_ui
+    global _client, _session, _devices, _patterns_by_id, _patterns_ui
     if _client is not None and _devices:
         return
 
@@ -149,23 +157,31 @@ async def _ensure_client() -> None:
     if not (email and password):
         raise GemstoneError("Gemstone credentials are not configured")
 
-    client = GemstoneClient(email, password)
+    import aiohttp
+
+    # Our own session, created on THIS loop: pygemstone's default one ignores
+    # HTTPS_PROXY, and in the container the only way out is the egress proxy.
+    # Cognito login goes through boto3, which honours the proxy env by itself.
+    session = aiohttp.ClientSession(
+        trust_env=True, timeout=aiohttp.ClientTimeout(total=_HTTP_TIMEOUT)
+    )
+    client = GemstoneClient(email, password, session=session, timeout=_HTTP_TIMEOUT)
     try:
-        # __aenter__ creates the aiohttp session on THIS loop; we drive the
-        # context manager manually because the client is cached for the
-        # process lifetime rather than scoped to a single ``async with``.
+        # We drive the context manager manually because the client is cached
+        # for the process lifetime rather than scoped to a single ``async with``.
         await client.__aenter__()
         await client.login()
         devices = await client.devices()
         patterns = await _discover_patterns(client)
     except LibGemstoneError as exc:
-        await _safe_close(client)
+        await _safe_close(client, session)
         raise GemstoneError(f"Gemstone login/discovery failed: {exc}") from exc
     except Exception as exc:  # noqa: BLE001 - surface any startup failure cleanly
-        await _safe_close(client)
+        await _safe_close(client, session)
         raise GemstoneError(f"Gemstone login/discovery failed: {exc}") from exc
 
     _client = client
+    _session = session
     _devices = {d.id: d for d in devices}
 
     by_id: dict[str, Any] = {}
@@ -206,22 +222,28 @@ async def _discover_patterns(client: Any) -> list[Any]:
     return out
 
 
-async def _safe_close(client: Any) -> None:
+async def _safe_close(client: Any, session: Any = None) -> None:
     try:
         await client.__aexit__(None, None, None)
     except Exception:  # pragma: no cover - best-effort cleanup
         pass
+    if session is not None:
+        try:
+            await session.close()
+        except Exception:  # pragma: no cover - best-effort cleanup
+            pass
 
 
 async def _reset() -> None:
     """Drop the cached client (forces a fresh login on the next call)."""
-    global _client, _devices, _patterns_by_id, _patterns_ui
+    global _client, _session, _devices, _patterns_by_id, _patterns_ui
     client, _client = _client, None
+    session, _session = _session, None
     _devices = {}
     _patterns_by_id = {}
     _patterns_ui = []
     if client is not None:
-        await _safe_close(client)
+        await _safe_close(client, session)
 
 
 def _state_to_dict(dev: Any) -> dict[str, Any]:

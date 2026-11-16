@@ -798,3 +798,88 @@ class HomepageHookTests(TestCase):
         mock_call.assert_called_once_with("scene", "turn_on", "scene.movie")
         with self.assertRaises(ValueError):
             run_shortcut("scene-unknown")
+
+
+class ManifestTests(TestCase):
+    def test_hub_api_2_manifest(self):
+        from device_control.plugin import spec
+        m = spec.manifest()
+        self.assertEqual(m["api_version"], 2)
+        self.assertEqual((m["network"], m["lifecycle"], m["memory_mb"]), ("outbound", "always", 128))
+        perms = m["permissions"]
+        self.assertIn("ha.call:cover.set_cover_position", perms)
+        self.assertIn("ha.call:climate.turn_off", perms)
+        self.assertIn("media", perms)
+        self.assertFalse([p for p in perms if p.endswith(":*") or p == "ha.read:*"])
+
+    def test_password_is_a_secret_setting(self):
+        from bdh_sdk.plugins import SECRET
+        from device_control.plugin import spec
+        types = {s.key: s.type for s in spec.settings}
+        self.assertEqual(types["gemstone_password"], SECRET)
+        self.assertIn("gemstone_email", types)
+        self.assertIn("scenes_filter", types)
+
+
+class BrokerTests(TestCase):
+    """In its container the app reaches HA and its secrets through the hub broker."""
+
+    STATES = [
+        {"entity_id": "light.a", "state": "on", "attributes": {}},
+        {"entity_id": "climate.living", "state": "heat", "attributes": {}},
+        {"entity_id": "scene.movie", "state": "x", "attributes": {"friendly_name": "Movie"}},
+    ]
+
+    def setUp(self):
+        from bdh_sdk.testing import FakeBroker
+
+        views._fireplace_cache.clear()
+        self.addCleanup(views._fireplace_cache.clear)
+        self.broker = FakeBroker(
+            grants=("settings.get", "secrets.get", "ha.get_all_states", "ha.get_entity_states",
+                    "ha.call_service"),
+            install=True, app_id="device_control")
+        self.broker.start()
+        self.addCleanup(self.broker.stop)
+        self.broker.on("ha.get_all_states", lambda p: self.STATES)
+        self.broker.on("ha.call_service", lambda p: [True, None])
+        patcher = patch("device_control.homepage.TABS",
+                        [{"devices": {"Room": [{"entity_id": "light.a", "type": "light"}]}}])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_action_calls_service_through_broker(self):
+        eid = "switch.living_room_tv_socket_1"
+        resp = self.client.post(reverse("device_control_action"),
+                                data=json.dumps({"entity_id": eid, "action": "on", "type": "switch"}),
+                                content_type="application/json")
+        self.assertEqual(resp.status_code, 200)
+        (call,) = self.broker.ops("ha.call_service")
+        self.assertEqual(call["entity_id"], eid)
+
+    def test_refused_call_is_a_502_not_a_crash(self):
+        self.broker.grants = ["settings.get", "secrets.get", "ha.get_all_states"]
+        eid = "switch.living_room_tv_socket_1"
+        resp = self.client.post(reverse("device_control_action"),
+                                data=json.dumps({"entity_id": eid, "action": "on", "type": "switch"}),
+                                content_type="application/json")
+        self.assertEqual(resp.status_code, 502)
+
+    def test_without_ha_ws_status_and_scenes_still_work(self):
+        # ha.ws can't be requested in a manifest, so the fireplace registry is refused.
+        from device_control.homepage import shortcuts, status
+        self.assertEqual(status().text, "1 light on")
+        self.assertEqual([s.id for s in shortcuts()], ["scene-movie"])
+        resp = self.client.get(reverse("device_control_fireplace_states"))
+        self.assertEqual(resp.status_code, 502)
+
+    def test_gemstone_password_comes_from_the_secret_store(self):
+        from . import gemstone_client
+        self.broker.settings[("device_control", "gemstone_email")] = "a@b"
+        self.broker.secrets[("device_control", "gemstone_password")] = "pw"
+        with patch.dict("os.environ", {}, clear=False):
+            for name in ("GEMSTONE_EMAIL", "GEMSTONE_PASSWORD",
+                         "BDH_DEVICE_CONTROL_GEMSTONE_EMAIL", "BDH_DEVICE_CONTROL_GEMSTONE_PASSWORD"):
+                os.environ.pop(name, None)
+            self.assertEqual(gemstone_client._credentials(), ("a@b", "pw"))
+        self.assertTrue(self.broker.ops("secrets.get"))

@@ -17,6 +17,8 @@ from django.views.decorators.http import require_POST
 
 from .device_config import TABS, get_all_entity_ids, GEMSTONE_OVERRIDES
 from .ha_client import (
+    HA_ERRORS,
+    BrokerError,
     HAError,
     call_service,
     get_all_states,
@@ -64,7 +66,7 @@ def device_control_scenes(request):
     """AJAX endpoint: the scenes for the Scenes tab, or 502 when HA is down."""
     try:
         return JsonResponse({"scenes": get_scenes()})
-    except HAError as exc:
+    except HA_ERRORS as exc:
         logger.warning("Scenes fetch failed: %s", exc)
         return JsonResponse({"error": str(exc)}, status=502)
 
@@ -83,7 +85,7 @@ def device_control_scene_action(request):
         if scene_id not in {s["id"] for s in get_scenes()}:
             return JsonResponse({"error": "Unknown scene"}, status=400)
         activate_scene(scene_id)
-    except (HAError, RuntimeError) as exc:
+    except (HAError, BrokerError, RuntimeError) as exc:
         return JsonResponse({"ok": False, "error": str(exc)}, status=502)
     return JsonResponse({"ok": True})
 
@@ -95,7 +97,11 @@ def device_control_states(request):
     Returns JSON: { entity_id: { state, friendly_name, current_position? } }
     """
     all_ids = get_all_entity_ids()
-    raw_states = get_entity_states(all_ids)
+    try:
+        raw_states = get_entity_states(all_ids)
+    except HA_ERRORS as exc:
+        logger.warning("States fetch failed: %s", exc)
+        return JsonResponse({"error": str(exc)}, status=502)
 
     result = {}
     for eid, data in raw_states.items():
@@ -166,7 +172,10 @@ def device_control_action(request):
         if position is not None:
             extra_data = {"position": int(position)}
 
-    success, error = call_service(domain, service, entity_id, extra_data=extra_data)
+    try:
+        success, error = call_service(domain, service, entity_id, extra_data=extra_data)
+    except HA_ERRORS as exc:
+        success, error = False, str(exc)
 
     if success:
         return JsonResponse({"ok": True, "entity_id": entity_id, "action": action})
@@ -247,7 +256,7 @@ def device_control_fireplace_states(request):
             for s in get_all_states()
             if s.get("entity_id") in registry["entities"]
         }
-    except HAError as exc:
+    except HA_ERRORS as exc:
         logger.warning("Fireplace states fetch failed: %s", exc)
         return JsonResponse({"error": str(exc)}, status=502)
     return JsonResponse({**registry, "states": states})
@@ -282,12 +291,15 @@ def device_control_fireplace_action(request):
 
     try:
         registry = _napoleon_registry()
-    except HAError as exc:
+    except HA_ERRORS as exc:
         return JsonResponse({"ok": False, "error": str(exc)}, status=502)
     if entity_id not in registry["entities"]:
         return JsonResponse({"error": "Not a Napoleon entity"}, status=400)
 
-    ok, err = call_service(domain, service, entity_id, extra)
+    try:
+        ok, err = call_service(domain, service, entity_id, extra)
+    except HA_ERRORS as exc:
+        ok, err = False, str(exc)
     if not ok:
         return JsonResponse({"ok": False, "error": err}, status=502)
     return JsonResponse({"ok": True})
@@ -297,7 +309,7 @@ def device_control_fireplace_card(request):
     """Serve the integration's card JS same-origin (proxied from HA, cached)."""
     try:
         js = _cached("card", _FIREPLACE_CARD_TTL, lambda: get_static(FIREPLACE_CARD_PATH))
-    except HAError as exc:
+    except HA_ERRORS as exc:
         logger.warning("Fireplace card fetch failed: %s", exc)
         return HttpResponse("// fireplace card unavailable", status=502, content_type="application/javascript")
     resp = HttpResponse(js, content_type="application/javascript")
