@@ -23,8 +23,8 @@ from .ha_client import (
     call_service,
     get_all_states,
     get_entity_states,
+    get_registry,
     get_static,
-    ws_commands,
 )
 from . import gemstone_client
 from .scenes import activate_scene, get_scenes
@@ -219,23 +219,20 @@ def _cached(key, ttl, loader):
 
 
 def _load_napoleon_registry():
-    entities, devices, config = ws_commands(
-        {"type": "config/entity_registry/list"},
-        {"type": "config/device_registry/list"},
-        {"type": "get_config"},
-    )
+    # ha.registry only needs ha.read; the hub trims it to entities we may read.
+    reg = get_registry(platform="napoleon")
     ents = {
         e["entity_id"]: {k: e.get(k) for k in ("entity_id", "device_id", "platform", "translation_key")}
-        for e in entities
+        for e in reg.get("entities") or ()
         if e.get("platform") == "napoleon" and not e.get("disabled_by")
     }
     device_ids = {e["device_id"] for e in ents.values() if e["device_id"]}
     devs = {
         d["id"]: {k: d.get(k) for k in ("id", "name", "name_by_user")}
-        for d in devices
+        for d in reg.get("devices") or ()
         if d["id"] in device_ids
     }
-    unit = ((config or {}).get("unit_system") or {}).get("temperature", "°C")
+    unit = (reg.get("unit_system") or {}).get("temperature", "°C")
     return {"entities": ents, "devices": devs, "config": {"unit_system": {"temperature": unit}}}
 
 

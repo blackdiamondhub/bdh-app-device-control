@@ -32,9 +32,10 @@ secret `gemstone_password` (vault; previously `GEMSTONE_EMAIL` /
 `GEMSTONE_PASSWORD` env). In the container these come from the hub through
 the broker; hub environment variables are not visible to the app.
 
-The Fireplace tab reads HA's device/entity registry over the websocket API,
-which needs the broker's `ha.ws` grant. A manifest can't request `ha.ws`
-yet, so until the hub grants it the Fireplace tab shows an error and the
+The Fireplace tab reads HA's device/entity registry through the broker's
+read-only `ha.registry` op (bdh-sdk 0.32+, `ha.get_registry`), which the
+manifest's `ha.read` grants cover; the hub returns only Napoleon entities in
+those domains. If the hub refuses it, the Fireplace tab shows an error and the
 fireplace homepage status/shortcut are hidden; everything else works.
 
 CI's `image` job (from bdh-sdk's `app-ci.yml`) locks the dependencies
