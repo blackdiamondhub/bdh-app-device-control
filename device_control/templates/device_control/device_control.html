@@ -25,8 +25,8 @@
     /* Fireplace tab fits the viewport: no bottom padding, card sized by JS */
     body.dc-fit .dc-stage { padding-bottom: 1rem; }
 
-    /* ── Sticky tab bar ── */
-    .dc-bar { position: sticky; top: 62px; z-index: 5; display: flex; align-items: center; gap: .75rem; margin: 0 0 1.25rem;
+    /* ── Sticky tab bar (top of the hub's iframe; the hub's navbar is outside it) ── */
+    .dc-bar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: .75rem; margin: 0 0 1.25rem;
               padding: .55rem; border-radius: 30px; background: rgba(10,18,30,.78); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
               border: 1px solid rgba(255,255,255,.08); box-shadow: 0 12px 34px rgba(0,0,0,.35); }
     .dc-tabs { flex: 1; display: flex; flex-wrap: wrap; gap: .4rem; }
