@@ -829,6 +829,24 @@ class ManifestTests(TestCase):
         self.assertIn("scenes_filter", types)
 
 
+class HubFrameLayoutTests(TestCase):
+    """The app renders inside the hub's iframe, below the hub navbar, so its
+    CSS must not reserve space for that navbar (e.g. sticky ``top: 62px``,
+    which left the tab bar floating over the scrolled controls)."""
+
+    def test_no_hub_navbar_offsets(self):
+        import pathlib
+        import re
+        root = pathlib.Path(__file__).resolve().parent
+        pattern = re.compile(r"top\s*:\s*6[0-9]px|100vh\s*-\s*6[0-9]px")
+        hits = []
+        for path in list(root.glob("templates/**/*.html")) + list(root.glob("static/**/*.css")):
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if pattern.search(line):
+                    hits.append(f"{path.relative_to(root)}:{n}: {line.strip()}")
+        self.assertEqual(hits, [])
+
+
 class BrokerTests(TestCase):
     """In its container the app reaches HA and its secrets through the hub broker."""
 
