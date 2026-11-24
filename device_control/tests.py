@@ -6,7 +6,7 @@ import json
 import os
 from unittest.mock import patch, MagicMock
 from django.test import TestCase, RequestFactory, tag
-from django.urls import reverse
+from django.urls import NoReverseMatch, reverse
 from django.contrib.staticfiles.testing import StaticLiveServerTestCase
 
 from .device_config import TABS, get_all_entity_ids
@@ -53,6 +53,22 @@ class DeviceConfigTests(TestCase):
 
 class HaClientTests(TestCase):
     """Tests for ha_client.py (mocked HTTP)."""
+
+    def setUp(self):
+        # The hub's provider reads HA from Settings (none in the test DB);
+        # point bdh_sdk.ha at a fixed instance so the mocked HTTP path runs.
+        from bdh_sdk import ha as sdk_ha
+
+        class _Provider:
+            def connection(self, instance=None):
+                return ("http://ha.test:8123", "token")
+
+            def instances(self):
+                return [{"id": "ha", "name": "HA", "site": "", "default": True}]
+
+        previous = sdk_ha._provider
+        sdk_ha.set_provider(_Provider())
+        self.addCleanup(sdk_ha.set_provider, previous)
 
     @patch("device_control.ha_client.requests.get")
     def test_get_entity_state_success(self, mock_get):
@@ -386,213 +402,16 @@ class FireplaceTabTests(TestCase):
         self.assertIn('fireplace.css', content)
 
 
-class GemstoneViewTests(TestCase):
-    """Tests for the Gemstone Lights endpoints (mocked gemstone_client)."""
+class GemstoneRemovedTests(TestCase):
+    """Gemstone Lights moved to its own app; Controls must not show or route it."""
 
-    def _device(self, **over):
-        base = {
-            "id": "dev-123",
-            "name": "Roofline",
-            "online": True,
-            "power": True,
-            "pattern_id": "pat-1",
-            "pattern_name": "Christmas",
-            "pattern_colors": ["#ff0000", "#00ff00"],
-        }
-        base.update(over)
-        return base
-
-    def _pattern(self, **over):
-        base = {
-            "id": "pat-1",
-            "name": "Christmas",
-            "colors": ["#ff0000", "#00ff00"],
-            "is_favorite": True,
-        }
-        base.update(over)
-        return base
-
-    # ----- states endpoint -----
-
-    @patch("device_control.views.gemstone_client.is_configured", return_value=False)
-    def test_states_not_configured(self, _cfg):
-        resp = self.client.get(reverse("device_control_gemstone_states"))
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertFalse(data["configured"])
-        self.assertEqual(data["devices"], [])
-        self.assertEqual(data["patterns"], [])
-
-    @patch("device_control.views.gemstone_client.get_states")
-    @patch("device_control.views.gemstone_client.is_configured", return_value=True)
-    def test_states_success(self, _cfg, mock_states):
-        mock_states.return_value = {
-            "devices": [self._device()],
-            "patterns": [self._pattern()],
-        }
-        resp = self.client.get(reverse("device_control_gemstone_states"))
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertTrue(data["configured"])
-        self.assertEqual(len(data["devices"]), 1)
-        self.assertEqual(data["devices"][0]["id"], "dev-123")
-        self.assertEqual(len(data["patterns"]), 1)
-        self.assertEqual(data["patterns"][0]["id"], "pat-1")
-
-    @patch("device_control.views.gemstone_client.get_states")
-    @patch("device_control.views.gemstone_client.is_configured", return_value=True)
-    def test_states_cloud_error_returns_502(self, _cfg, mock_states):
-        mock_states.side_effect = views.gemstone_client.GemstoneError("cloud down")
-        resp = self.client.get(reverse("device_control_gemstone_states"))
-        self.assertEqual(resp.status_code, 502)
-        data = resp.json()
-        self.assertTrue(data["configured"])
-        self.assertIn("error", data)
-
-    # ----- action endpoint -----
-
-    def test_action_requires_post(self):
-        resp = self.client.get(reverse("device_control_gemstone_action"))
-        self.assertEqual(resp.status_code, 405)
-
-    def test_action_rejects_bad_json(self):
-        resp = self.client.post(
-            reverse("device_control_gemstone_action"),
-            data="not json",
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 400)
-
-    def test_action_rejects_missing_device_id(self):
-        resp = self.client.post(
-            reverse("device_control_gemstone_action"),
-            data='{"action": "power", "value": true}',
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 400)
-
-    def test_action_rejects_unknown_action(self):
-        resp = self.client.post(
-            reverse("device_control_gemstone_action"),
-            data='{"device_id": "dev-123", "action": "explode", "value": true}',
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 400)
-
-    def test_action_rejects_bad_power_value(self):
-        # power must be a bool
-        resp = self.client.post(
-            reverse("device_control_gemstone_action"),
-            data='{"device_id": "dev-123", "action": "power", "value": "on"}',
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 400)
-
-    def test_action_rejects_empty_pattern(self):
-        resp = self.client.post(
-            reverse("device_control_gemstone_action"),
-            data='{"device_id": "dev-123", "action": "pattern", "value": ""}',
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 400)
-
-    @patch("device_control.views.gemstone_client.is_configured", return_value=False)
-    def test_action_not_configured_returns_503(self, _cfg):
-        resp = self.client.post(
-            reverse("device_control_gemstone_action"),
-            data='{"device_id": "dev-123", "action": "power", "value": true}',
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 503)
-
-    @patch("device_control.views.gemstone_client.apply_action")
-    @patch("device_control.views.gemstone_client.is_configured", return_value=True)
-    def test_action_power_success(self, _cfg, mock_apply):
-        mock_apply.return_value = self._device(power=False)
-        resp = self.client.post(
-            reverse("device_control_gemstone_action"),
-            data='{"device_id": "dev-123", "action": "power", "value": false}',
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertTrue(data["ok"])
-        self.assertFalse(data["device"]["power"])
-        mock_apply.assert_called_once_with("dev-123", "power", False)
-
-    @patch("device_control.views.gemstone_client.apply_action")
-    @patch("device_control.views.gemstone_client.is_configured", return_value=True)
-    def test_action_pattern_success(self, _cfg, mock_apply):
-        mock_apply.return_value = self._device(pattern_id="pat-2", pattern_name="Halloween")
-        resp = self.client.post(
-            reverse("device_control_gemstone_action"),
-            data='{"device_id": "dev-123", "action": "pattern", "value": "pat-2"}',
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 200)
-        mock_apply.assert_called_once_with("dev-123", "pattern", "pat-2")
-
-    @patch("device_control.views.gemstone_client.apply_action")
-    @patch("device_control.views.gemstone_client.is_configured", return_value=True)
-    def test_action_cloud_error_returns_502(self, _cfg, mock_apply):
-        mock_apply.side_effect = views.gemstone_client.GemstoneError("timeout")
-        resp = self.client.post(
-            reverse("device_control_gemstone_action"),
-            data='{"device_id": "dev-123", "action": "power", "value": true}',
-            content_type="application/json",
-        )
-        self.assertEqual(resp.status_code, 502)
-        self.assertFalse(resp.json()["ok"])
-
-
-class GemstoneTabTests(TestCase):
-    """The gemstone tab must render its dedicated panel structure."""
-
-    def test_gemstone_panel_rendered(self):
-        resp = self.client.get(reverse("device_control"))
-        content = resp.content.decode()
-        self.assertIn('id="panel-gemstone"', content)
-        self.assertIn('id="gemSelect"', content)
-        self.assertIn('id="gemDetail"', content)
-        self.assertIn('gemstone.js', content)
-        self.assertIn('gemstone.css', content)
-
-
-class GemstoneColorDecodeTests(TestCase):
-    """``_color_to_hex`` must honour Gemstone's little-endian (R-low) packing."""
-
-    def test_known_fixture_colors(self):
-        from .gemstone_client import _color_to_hex
-        # Values + names taken from pygemstone's own test fixtures.
-        self.assertEqual(_color_to_hex(255), "#ff0000")        # "Red"  0x000000FF
-        self.assertEqual(_color_to_hex(65280), "#00ff00")      # "Green" 0x0000FF00
-        self.assertEqual(_color_to_hex(16711680), "#0000ff")   # blue   0x00FF0000
-        self.assertEqual(_color_to_hex(16777215), "#ffffff")   # "Cool White" 0x00FFFFFF
-        self.assertEqual(_color_to_hex(4294967295), "#ffffff")  # white w/ alpha
-
-    def test_warm_white_channel(self):
-        from .gemstone_client import _color_to_hex
-        # White-LED channel sentinel (0xFF000000): no RGB, render warm white.
-        self.assertEqual(_color_to_hex(4278190080), "#fff1e0")
-
-    def test_bad_input_falls_back(self):
-        from .gemstone_client import _color_to_hex
-        self.assertEqual(_color_to_hex(None), "#000000")
-        self.assertEqual(_color_to_hex("nope"), "#000000")
-
-
-class GemstoneCredentialsTests(TestCase):
-    def test_namespaced_and_legacy_env_names(self):
-        from . import gemstone_client
-        cases = [
-            {"BDH_DEVICE_CONTROL_GEMSTONE_EMAIL": "a@b", "BDH_DEVICE_CONTROL_GEMSTONE_PASSWORD": "pw"},
-            {"GEMSTONE_EMAIL": "a@b", "GEMSTONE_PASSWORD": "pw"},
-        ]
-        for env in cases:
-            with self.subTest(env=sorted(env)), patch.dict("os.environ", env):
-                self.assertTrue(gemstone_client.is_configured())
-        with patch.dict("os.environ", {"GEMSTONE_EMAIL": "a@b", "GEMSTONE_PASSWORD": ""}):
-            self.assertFalse(gemstone_client.is_configured())
+    def test_no_gemstone_tab_panel_assets_or_routes(self):
+        self.assertNotIn("gemstone", [t["key"] for t in TABS])
+        content = self.client.get(reverse("device_control")).content.decode().lower()
+        self.assertNotIn("gemstone", content)
+        for name in ("device_control_gemstone_states", "device_control_gemstone_action"):
+            with self.subTest(name=name), self.assertRaises(NoReverseMatch):
+                reverse(name)
 
 
 @tag('selenium')
@@ -813,20 +632,16 @@ class ManifestTests(TestCase):
         from device_control.plugin import spec
         m = spec.manifest()
         self.assertEqual(m["api_version"], 2)
-        self.assertEqual((m["network"], m["lifecycle"], m["memory_mb"]), ("outbound", "always", 128))
+        self.assertEqual((m["network"], m["lifecycle"], m["memory_mb"]), ("none", "always", 96))
         perms = m["permissions"]
         self.assertIn("ha.call:cover.set_cover_position", perms)
         self.assertIn("ha.call:climate.turn_off", perms)
         self.assertIn("media", perms)
         self.assertFalse([p for p in perms if p.endswith(":*") or p == "ha.read:*"])
 
-    def test_password_is_a_secret_setting(self):
-        from bdh_sdk.plugins import SECRET
+    def test_only_the_scenes_setting(self):
         from device_control.plugin import spec
-        types = {s.key: s.type for s in spec.settings}
-        self.assertEqual(types["gemstone_password"], SECRET)
-        self.assertIn("gemstone_email", types)
-        self.assertIn("scenes_filter", types)
+        self.assertEqual([s.key for s in spec.settings], ["scenes_filter"])
 
 
 class HubFrameLayoutTests(TestCase):
@@ -921,14 +736,3 @@ class BrokerTests(TestCase):
         self.assertEqual([s.id for s in shortcuts()], ["scene-movie"])
         resp = self.client.get(reverse("device_control_fireplace_states"))
         self.assertEqual(resp.status_code, 502)
-
-    def test_gemstone_password_comes_from_the_secret_store(self):
-        from . import gemstone_client
-        self.broker.settings[("device_control", "gemstone_email")] = "a@b"
-        self.broker.secrets[("device_control", "gemstone_password")] = "pw"
-        with patch.dict("os.environ", {}, clear=False):
-            for name in ("GEMSTONE_EMAIL", "GEMSTONE_PASSWORD",
-                         "BDH_DEVICE_CONTROL_GEMSTONE_EMAIL", "BDH_DEVICE_CONTROL_GEMSTONE_PASSWORD"):
-                os.environ.pop(name, None)
-            self.assertEqual(gemstone_client._credentials(), ("a@b", "pw"))
-        self.assertTrue(self.broker.ops("secrets.get"))

@@ -1,6 +1,6 @@
 # bdh-app-device-control
 
-Black Diamond Hub app: the lodge Controls page (scenes, lights, blinds, fireplaces, Gemstone Lights) via Home Assistant. Moved out of
+Black Diamond Hub app: the lodge Controls page (scenes, lights, blinds, fireplaces) via Home Assistant. Moved out of
 [BlackDiamondHub](https://github.com/blackdiamondlodge/BlackDiamondHub) and
 installed into the hub through the `blackdiamondhub.plugins` entry point
 (see [bdh-sdk](https://github.com/blackdiamondlodge/bdh-sdk)).
@@ -20,16 +20,14 @@ Since 2.0.0 the app runs in its own container:
 - permissions: `ha.read` and `ha.call` for exactly the domains/services the
   Controls page uses (switch, light, cover, scene, climate, number, select),
   plus `media` (the fireplace card's JS comes from HA's static files);
-- `network: outbound` — Gemstone Lights is a cloud service (AWS Cognito +
-  AppSync, HTTPS/WSS on 443). Its traffic goes through the supervisor's
-  egress proxy: the app hands pygemstone an aiohttp session with
-  `trust_env=True` so `HTTPS_PROXY` is honoured (boto3 honours it already);
-- `lifecycle: always` (the Gemstone client keeps a background event loop);
-- `memory_mb: 128`.
+- `network: none` — Home Assistant is reached through the hub broker;
+- `lifecycle: always`, so the homepage lights/fireplace status stays live;
+- `memory_mb: 96`.
 
-Settings to seed on the hub: `scenes_filter`, `gemstone_email` and the
-secret `gemstone_password` (vault; previously `GEMSTONE_EMAIL` /
-`GEMSTONE_PASSWORD` env). In the container these come from the hub through
+Gemstone Lights moved to its own app (`bdh-app-gemstone`) in 2.1.0; the
+Gemstone tab and its `gemstone_email` / `gemstone_password` settings are gone.
+
+Settings to seed on the hub: `scenes_filter`. In the container it comes from the hub through
 the broker; hub environment variables are not visible to the app.
 
 The Fireplace tab reads HA's device/entity registry through the broker's
