@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.urls]
-Source = "https://github.com/blackdiamondlodge/bdh-app-device-control"
+Source = "https://github.com/blackdiamondhub/bdh-app-device-control"
 
 [project.entry-points."blackdiamondhub.plugins"]
 device_control = "device_control.plugin:spec"
