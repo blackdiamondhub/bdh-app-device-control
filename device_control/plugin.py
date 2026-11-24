@@ -1,5 +1,5 @@
 from bdh_sdk import PluginSpec, Setting, Tile
-from bdh_sdk.plugins import LIFECYCLE_ALWAYS, NETWORK_OUTBOUND, SECRET
+from bdh_sdk.plugins import LIFECYCLE_ALWAYS, NETWORK_NONE
 
 spec = PluginSpec(
     id="device_control",
@@ -25,9 +25,6 @@ spec = PluginSpec(
             help="Comma-separated Home Assistant scene names for the Scenes tab "
                  "and homepage shortcuts. Empty shows every scene.",
         ),
-        Setting("gemstone_email", "Gemstone Lights email",
-                help="Gemstone Lights cloud account for the Gemstone tab."),
-        Setting("gemstone_password", "Gemstone Lights password", type=SECRET),
     ),
     api_version=2,
     # Lights/switches/shades tabs, scenes, and the Napoleon fireplace card
@@ -60,10 +57,10 @@ spec = PluginSpec(
         # The fireplace card's JS is served from HA's /napoleon_static/.
         "media",
     ),
-    # Gemstone Lights is a cloud service (AWS, HTTPS only); HA goes via the hub.
-    network=NETWORK_OUTBOUND,
-    # The Gemstone client keeps a logged-in session on a background loop thread.
+    # Home Assistant is reached through the hub broker; nothing else is needed.
+    network=NETWORK_NONE,
+    # Keeps the homepage fireplace/lights status live (on_demand would let it go
+    # hours stale while the app sleeps).
     lifecycle=LIFECYCLE_ALWAYS,
-    # aiohttp + boto3 (Cognito login) on top of Django.
-    memory_mb=128,
+    memory_mb=96,
 )

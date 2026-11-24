@@ -7,7 +7,6 @@
 
 {% block content %}
 <link rel="stylesheet" href="{% static 'device_control/fireplace.css' %}">
-<link rel="stylesheet" href="{% static 'device_control/gemstone.css' %}">
 <style>
     body.dc-page {
         --accent: #7cc4ff;
@@ -259,9 +258,6 @@
          data-states-url="{% url 'device_control_fireplace_states' %}"
          data-action-url="{% url 'device_control_fireplace_action' %}"
          data-card-url="{% url 'device_control_fireplace_card' %}"
-         data-csrf="{{ csrf_token }}"{% elif tab.key == "gemstone" %}
-         data-states-url="{% url 'device_control_gemstone_states' %}"
-         data-action-url="{% url 'device_control_gemstone_action' %}"
          data-csrf="{{ csrf_token }}"{% endif %}>
         {% if tab.key == "scenes" %}
         <div class="sc-msg" id="scMsg"><i class="fas fa-spinner fa-spin"></i> Loading scenes...</div>
@@ -271,12 +267,6 @@
             <div class="fp-select" id="fpSelect"></div>
             <div class="fp-msg" id="fpMsg" hidden></div>
             <div class="fp-card" id="fpCard"></div>
-        </div>
-        {% elif tab.key == "gemstone" %}
-        <div class="gem-wrap">
-            <div class="gem-status" id="gemStatus"></div>
-            <div class="gem-select" id="gemSelect"></div>
-            <div class="gem-detail" id="gemDetail"></div>
         </div>
         {% else %}
         <div class="dc-loading" id="loading-{{ tab.key }}">
@@ -1117,5 +1107,4 @@
     }
 </script>
 <script src="{% static 'device_control/fireplace.js' %}"></script>
-<script src="{% static 'device_control/gemstone.js' %}"></script>
 {% endblock %}
