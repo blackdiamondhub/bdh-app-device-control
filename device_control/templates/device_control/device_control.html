@@ -6,7 +6,6 @@
 {% block body_class %}dc-page{% endblock %}
 
 {% block content %}
-<link rel="stylesheet" href="{% static 'device_control/fireplace.css' %}">
 <style>
     body.dc-page {
         --accent: #7cc4ff;
@@ -21,8 +20,6 @@
     }
 
     .dc-stage { position: relative; z-index: 1; max-width: 1500px; margin: 0 auto; padding: 1rem 1.25rem 7rem; }
-    /* Fireplace tab fits the viewport: no bottom padding, card sized by JS */
-    body.dc-fit .dc-stage { padding-bottom: 1rem; }
 
     /* ── Sticky tab bar (top of the hub's iframe; the hub's navbar is outside it) ── */
     .dc-bar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: .75rem; margin: 0 0 1.25rem;
@@ -191,7 +188,6 @@
     /* ── Phone: tabs become a 5-column icon grid at the top of the content ── */
     @media (max-width: 600px) {
         .dc-stage { padding: .9rem .85rem calc(6rem + env(safe-area-inset-bottom)); }
-        body.dc-fit .dc-stage { padding-bottom: calc(.9rem + env(safe-area-inset-bottom)); }
         .dc-bar { position: static; flex-direction: column; align-items: stretch; gap: .6rem; margin: 0 0 .9rem; padding: 0;
                   border: 0; border-radius: 0; background: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
         .dc-tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; }
@@ -254,20 +250,10 @@
 <!-- Content -->
 <div class="dc-container">
     {% for tab in tabs %}
-    <div id="panel-{{ tab.key }}" class="dc-panel{% if forloop.first %} active{% endif %}"{% if tab.key == "fireplace" %}
-         data-states-url="{% url 'device_control_fireplace_states' %}"
-         data-action-url="{% url 'device_control_fireplace_action' %}"
-         data-card-url="{% url 'device_control_fireplace_card' %}"
-         data-csrf="{{ csrf_token }}"{% endif %}>
+    <div id="panel-{{ tab.key }}" class="dc-panel{% if forloop.first %} active{% endif %}">
         {% if tab.key == "scenes" %}
         <div class="sc-msg" id="scMsg"><i class="fas fa-spinner fa-spin"></i> Loading scenes...</div>
         <div class="sc-grid" id="scGrid"></div>
-        {% elif tab.key == "fireplace" %}
-        <div class="fp-wrap">
-            <div class="fp-select" id="fpSelect"></div>
-            <div class="fp-msg" id="fpMsg" hidden></div>
-            <div class="fp-card" id="fpCard"></div>
-        </div>
         {% else %}
         <div class="dc-loading" id="loading-{{ tab.key }}">
             <i class="fas fa-spinner"></i>
@@ -437,28 +423,8 @@
         // Re-apply filter for the newly visible tab
         applyFilters();
 
-        fitFireplace();
-
         if (window.hubScrollHint) window.hubScrollHint.refresh();
     }
-
-    // The fireplace tab sizes its card to the viewport so it never scrolls.
-    function fitFireplace() {
-        const on = currentTab === 'fireplace';
-        document.body.classList.toggle('dc-fit', on);
-        const wrap = document.querySelector('#panel-fireplace .fp-wrap');
-        if (!wrap) return;
-        if (!on) { wrap.style.height = ''; wrap.style.minHeight = ''; return; }
-        const top = wrap.getBoundingClientRect().top + window.scrollY;
-        let h = Math.max(380, window.innerHeight - top - 16);
-        wrap.style.minHeight = '0';
-        wrap.style.height = h + 'px';
-        const over = document.documentElement.scrollHeight - window.innerHeight;
-        if (over > 0) wrap.style.height = Math.max(380, h - over) + 'px';
-    }
-    window.addEventListener('resize', fitFireplace);
-    window.addEventListener('load', fitFireplace);
-    fitFireplace();
 
     // ── Scenes ──
     const SCENES_URL = "{% url 'device_control_scenes' %}";
@@ -1106,5 +1072,4 @@
         });
     }
 </script>
-<script src="{% static 'device_control/fireplace.js' %}"></script>
 {% endblock %}

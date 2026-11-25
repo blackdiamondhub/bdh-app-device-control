@@ -244,162 +244,25 @@ class ViewTests(TestCase):
         self.assertFalse(data["ok"])
 
 
-REGISTRY = {
-    "entities": {
-        "switch.lr_power": {"entity_id": "switch.lr_power", "device_id": "dev1",
-                            "platform": "napoleon", "translation_key": "fireplace_power"},
-        "light.lr_ember": {"entity_id": "light.lr_ember", "device_id": "dev1",
-                           "platform": "napoleon", "translation_key": "ember_bed"},
-    },
-    "devices": {"dev1": {"id": "dev1", "name": "Living Room", "name_by_user": None}},
-    "config": {"unit_system": {"temperature": "°C"}},
-}
+class FireplaceRemovedTests(TestCase):
+    """The fireplace moved to its own app (bdh-app-fireplace); Controls must
+    not show, route or serve it."""
 
-
-class FireplaceViewTests(TestCase):
-    """Tests for the HA-backed fireplace endpoints (mocked HA client)."""
-
-    def setUp(self):
-        views._fireplace_cache.clear()
-
-    def _post(self, body):
-        return self.client.post(
-            reverse("device_control_fireplace_action"),
-            data=body if isinstance(body, str) else json.dumps(body),
-            content_type="application/json",
-        )
-
-    # ----- registry loading -----
-
-    @patch("device_control.views.get_registry")
-    def test_registry_filters_to_napoleon(self, mock_reg):
-        mock_reg.return_value = {
-            "entities": [
-                {"entity_id": "switch.lr_power", "device_id": "dev1", "platform": "napoleon",
-                 "translation_key": "fireplace_power", "disabled_by": None, "name": "x"},
-                {"entity_id": "switch.other", "device_id": "dev2", "platform": "hue",
-                 "translation_key": None, "disabled_by": None},
-                {"entity_id": "switch.lr_off", "device_id": "dev1", "platform": "napoleon",
-                 "translation_key": "eco_mode", "disabled_by": "user"},
-            ],
-            "devices": [{"id": "dev1", "name": "Living Room", "name_by_user": "LR", "model": "m"},
-                        {"id": "dev2", "name": "Hue"}],
-            "unit_system": {"temperature": "°F"},
-        }
-        reg = views._napoleon_registry()
-        mock_reg.assert_called_once_with(platform="napoleon")
-        self.assertEqual(list(reg["entities"]), ["switch.lr_power"])
-        self.assertNotIn("name", reg["entities"]["switch.lr_power"])
-        self.assertEqual(reg["devices"], {"dev1": {"id": "dev1", "name": "Living Room",
-                                                   "name_by_user": "LR"}})
-        self.assertEqual(reg["config"]["unit_system"]["temperature"], "°F")
-        views._napoleon_registry()
-        mock_reg.assert_called_once()  # cached
-
-    @patch("device_control.views.get_registry",
-           return_value={"entities": [], "devices": [], "unit_system": {}})
-    def test_registry_defaults_to_celsius(self, _):
-        self.assertEqual(views._napoleon_registry()["config"]["unit_system"]["temperature"], "°C")
-
-    # ----- states endpoint -----
-
-    @patch("device_control.views.get_all_states")
-    @patch("device_control.views._napoleon_registry", return_value=REGISTRY)
-    def test_states_returns_napoleon_states_only(self, _reg, mock_states):
-        mock_states.return_value = [
-            {"entity_id": "switch.lr_power", "state": "on"},
-            {"entity_id": "light.kitchen", "state": "on"},
-        ]
-        resp = self.client.get(reverse("device_control_fireplace_states"))
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertEqual(list(data["states"]), ["switch.lr_power"])
-        self.assertIn("dev1", data["devices"])
-        self.assertIn("light.lr_ember", data["entities"])
-
-    @patch("device_control.views._napoleon_registry", side_effect=views.HAError("down"))
-    def test_states_ha_error_returns_502(self, _reg):
-        resp = self.client.get(reverse("device_control_fireplace_states"))
-        self.assertEqual(resp.status_code, 502)
-        self.assertIn("error", resp.json())
-
-    # ----- action endpoint -----
-
-    def test_action_requires_post(self):
-        resp = self.client.get(reverse("device_control_fireplace_action"))
-        self.assertEqual(resp.status_code, 405)
-
-    def test_action_rejects_bad_json(self):
-        self.assertEqual(self._post("not json").status_code, 400)
-
-    def test_action_rejects_disallowed_service(self):
-        resp = self._post({"domain": "lock", "service": "unlock", "data": {"entity_id": "lock.front"}})
-        self.assertEqual(resp.status_code, 400)
-        resp = self._post({"domain": "switch", "service": "toggle", "data": {"entity_id": "switch.lr_power"}})
-        self.assertEqual(resp.status_code, 400)
-
-    def test_action_rejects_domain_mismatch(self):
-        resp = self._post({"domain": "switch", "service": "turn_on", "data": {"entity_id": "light.lr_ember"}})
-        self.assertEqual(resp.status_code, 400)
-
-    def test_action_rejects_unknown_fields(self):
-        resp = self._post({"domain": "light", "service": "turn_on",
-                           "data": {"entity_id": "light.lr_ember", "flash": "long"}})
-        self.assertEqual(resp.status_code, 400)
-
-    @patch("device_control.views.call_service")
-    @patch("device_control.views._napoleon_registry", return_value=REGISTRY)
-    def test_action_rejects_non_napoleon_entity(self, _reg, mock_call):
-        resp = self._post({"domain": "switch", "service": "turn_on", "data": {"entity_id": "switch.garage"}})
-        self.assertEqual(resp.status_code, 400)
-        mock_call.assert_not_called()
-
-    @patch("device_control.views.call_service", return_value=(True, None))
-    @patch("device_control.views._napoleon_registry", return_value=REGISTRY)
-    def test_action_success(self, _reg, mock_call):
-        resp = self._post({"domain": "light", "service": "turn_on",
-                           "data": {"entity_id": "light.lr_ember", "rgb_color": [255, 90, 30]}})
-        self.assertEqual(resp.status_code, 200)
-        self.assertTrue(resp.json()["ok"])
-        mock_call.assert_called_once_with("light", "turn_on", "light.lr_ember", {"rgb_color": [255, 90, 30]})
-
-    @patch("device_control.views.call_service", return_value=(False, "HA returned 500"))
-    @patch("device_control.views._napoleon_registry", return_value=REGISTRY)
-    def test_action_ha_error_returns_502(self, _reg, _call):
-        resp = self._post({"domain": "switch", "service": "turn_off", "data": {"entity_id": "switch.lr_power"}})
-        self.assertEqual(resp.status_code, 502)
-        self.assertFalse(resp.json()["ok"])
-
-    # ----- card proxy -----
-
-    @patch("device_control.views.get_static", return_value=b"customElements.define('x', class {});")
-    def test_card_proxied_and_cached(self, mock_static):
-        for _ in range(2):
-            resp = self.client.get(reverse("device_control_fireplace_card"))
-            self.assertEqual(resp.status_code, 200)
-            self.assertEqual(resp["Content-Type"], "application/javascript")
-        mock_static.assert_called_once_with(views.FIREPLACE_CARD_PATH)
-
-    @patch("device_control.views.get_static", side_effect=views.HAError("404"))
-    def test_card_unavailable_returns_502(self, _static):
-        resp = self.client.get(reverse("device_control_fireplace_card"))
-        self.assertEqual(resp.status_code, 502)
-
-
-class FireplaceTabTests(TestCase):
-    """The fireplace tab must render its dedicated panel structure."""
-
-    def test_fireplace_panel_rendered(self):
-        resp = self.client.get(reverse("device_control"))
-        content = resp.content.decode()
-        self.assertIn('id="panel-fireplace"', content)
-        self.assertIn('id="fpSelect"', content)
-        self.assertIn('id="fpCard"', content)
-        self.assertIn('data-states-url', content)
-        self.assertIn('data-action-url', content)
-        self.assertIn('data-card-url', content)
-        self.assertIn('fireplace.js', content)
-        self.assertIn('fireplace.css', content)
+    def test_no_fireplace_tab_panel_assets_or_routes(self):
+        self.assertNotIn("fireplace", [t["key"] for t in TABS])
+        content = self.client.get(reverse("device_control")).content.decode()
+        for needle in ('id="panel-fireplace"', "switchTab('fireplace'", "fireplace.js",
+                       "fireplace.css", "fpCard", "fitFireplace", "data-card-url"):
+            with self.subTest(needle=needle):
+                self.assertNotIn(needle, content)
+        for name in ("device_control_fireplace_states", "device_control_fireplace_action",
+                     "device_control_fireplace_card"):
+            with self.subTest(name=name), self.assertRaises(NoReverseMatch):
+                reverse(name)
+        for path in ("api/fireplace/states/", "api/fireplace/action/", "api/fireplace/card.js"):
+            with self.subTest(path=path):
+                url = reverse("device_control") + path
+                self.assertEqual(self.client.get(url).status_code, 404)
 
 
 class GemstoneRemovedTests(TestCase):
@@ -565,57 +428,48 @@ class HomepageHookTests(TestCase):
     ]}}]
 
     def setUp(self):
-        registry = {"entities": {"climate.living": {}, "climate.bedroom": {}, "switch.living": {}}}
-        for target, value in [
-            ("device_control.homepage._napoleon_registry", registry),
-            ("device_control.homepage.get_all_states", self.STATES),
-        ]:
-            patcher = patch(target, return_value=value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        patcher = patch("device_control.homepage.get_all_states", return_value=self.STATES)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         patcher = patch("device_control.homepage.TABS", self.TABS)
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_status_counts_lights_and_fireplaces(self):
+    def test_status_counts_configured_lights_only(self):
         from device_control.homepage import status
         result = status()
-        self.assertEqual(result.text, "2 lights on · 1 of 2 fireplaces on")
+        self.assertEqual(result.text, "2 lights on")
         self.assertEqual(result.level, "on")
 
-    def test_status_when_everything_is_off(self):
+    def test_status_when_all_lights_are_off(self):
+        # A lit (Napoleon) fireplace climate entity no longer counts as "on".
         from device_control.homepage import status
-        states = [{"entity_id": "climate.living", "state": "off"},
+        states = [{"entity_id": "climate.living", "state": "heat"},
                   {"entity_id": "light.a", "state": "off", "attributes": {}}]
-        with patch("device_control.homepage.get_all_states", return_value=states), \
-                patch("device_control.homepage._napoleon_registry",
-                      return_value={"entities": {"climate.living": {}}}):
+        with patch("device_control.homepage.get_all_states", return_value=states):
             result = status()
-        self.assertEqual(result.text, "All lights off · Fireplace off")
+        self.assertEqual(result.text, "All lights off")
         self.assertEqual(result.level, "info")
 
-    @patch("device_control.homepage.call_service", return_value=(True, None))
-    def test_fireplaces_off_only_touches_lit_fireplaces(self, mock_call):
-        from device_control.homepage import run_shortcut
-        run_shortcut("fireplaces_off")
-        mock_call.assert_called_once_with("climate", "turn_off", "climate.living")
+    def test_one_light_is_singular(self):
+        from device_control.homepage import status
+        states = [{"entity_id": "light.a", "state": "on", "attributes": {}}]
+        with patch("device_control.homepage.get_all_states", return_value=states):
+            self.assertEqual(status().text, "1 light on")
 
-    def test_fireplaces_off_offered_only_while_one_is_lit(self):
+    def test_shortcuts_are_scenes_only(self):
         from device_control.homepage import shortcuts
-        self.assertEqual([s.title for s in shortcuts()], ["Fireplaces off"])
-        unlit = [dict(s, state="off") if s["entity_id"].startswith("climate.") else s
-                 for s in self.STATES]
-        with patch("device_control.homepage.get_all_states", return_value=unlit):
-            self.assertEqual(shortcuts(), [])
-
-    def test_scenes_are_offered_before_fireplaces_off(self):
-        from device_control.homepage import shortcuts
+        self.assertEqual(shortcuts(), [])
         states = ScenesTests.STATES + self.STATES
         with patch("device_control.homepage.get_all_states", return_value=states):
             items = shortcuts()
         self.assertEqual([(s.id, s.title) for s in items], [
-            ("scene-movie", "Movie"), ("scene-party", "Party"),
-            ("fireplaces_off", "Fireplaces off")])
+            ("scene-movie", "Movie"), ("scene-party", "Party")])
+
+    def test_fireplaces_off_shortcut_is_gone(self):
+        from device_control.homepage import run_shortcut
+        with self.assertRaises(ValueError):
+            run_shortcut("fireplaces_off")
 
     @patch("device_control.scenes.call_service", return_value=(True, None))
     @patch("device_control.scenes.get_all_states", return_value=ScenesTests.STATES)
@@ -635,8 +489,11 @@ class ManifestTests(TestCase):
         self.assertEqual((m["network"], m["lifecycle"], m["memory_mb"]), ("none", "always", 96))
         perms = m["permissions"]
         self.assertIn("ha.call:cover.set_cover_position", perms)
-        self.assertIn("ha.call:climate.turn_off", perms)
-        self.assertIn("media", perms)
+        self.assertIn("ha.call:scene.turn_on", perms)
+        # The fireplace's grants went with it to bdh-app-fireplace.
+        self.assertNotIn("media", perms)
+        self.assertFalse([p for p in perms if p.split(":", 1)[-1].split(".", 1)[0]
+                          in ("climate", "number", "select")])
         self.assertFalse([p for p in perms if p.endswith(":*") or p == "ha.read:*"])
 
     def test_only_the_scenes_setting(self):
@@ -674,8 +531,6 @@ class BrokerTests(TestCase):
     def setUp(self):
         from bdh_sdk.testing import FakeBroker
 
-        views._fireplace_cache.clear()
-        self.addCleanup(views._fireplace_cache.clear)
         self.broker = FakeBroker(
             grants=("settings.get", "secrets.get", "ha.get_all_states", "ha.get_entity_states",
                     "ha.call_service"),
@@ -706,33 +561,19 @@ class BrokerTests(TestCase):
                                 content_type="application/json")
         self.assertEqual(resp.status_code, 502)
 
-    def test_fireplace_registry_comes_from_ha_registry(self):
+    def test_status_never_mentions_fireplaces(self):
+        # Even with Napoleon climate entities in HA (and ha.registry granted),
+        # the homepage status is lights-only and the registry is never read.
         self.broker.grants.append("ha.registry")
         self.broker.registry = {
-            "entities": [
-                {"entity_id": "climate.living", "device_id": "d1", "platform": "napoleon",
-                 "translation_key": None, "disabled_by": None},
-                {"entity_id": "light.a", "device_id": "d2", "platform": "hue",
-                 "translation_key": None, "disabled_by": None},
-            ],
-            "devices": [{"id": "d1", "name": "Living", "name_by_user": None},
-                        {"id": "d2", "name": "Hue", "name_by_user": None}],
+            "entities": [{"entity_id": "climate.living", "device_id": "d1", "platform": "napoleon",
+                          "translation_key": None, "disabled_by": None}],
+            "devices": [{"id": "d1", "name": "Living", "name_by_user": None}],
             "unit_system": {"temperature": "°C"},
         }
-        resp = self.client.get(reverse("device_control_fireplace_states"))
-        self.assertEqual(resp.status_code, 200)
-        body = resp.json()
-        self.assertEqual(list(body["entities"]), ["climate.living"])
-        self.assertEqual(list(body["devices"]), ["d1"])
-        self.assertEqual(list(body["states"]), ["climate.living"])
-        (call,) = self.broker.ops("ha.registry")
-        self.assertEqual(call["platform"], "napoleon")
-        self.assertFalse(self.broker.ops("ha.ws_commands"))
-
-    def test_without_ha_registry_status_and_scenes_still_work(self):
-        # If the hub refuses ha.registry, only the fireplace card fails.
         from device_control.homepage import shortcuts, status
-        self.assertEqual(status().text, "1 light on")
+        result = status()
+        self.assertEqual(result.text, "1 light on")
+        self.assertNotIn("fireplace", result.text.lower())
         self.assertEqual([s.id for s in shortcuts()], ["scene-movie"])
-        resp = self.client.get(reverse("device_control_fireplace_states"))
-        self.assertEqual(resp.status_code, 502)
+        self.assertFalse(self.broker.ops("ha.registry"))

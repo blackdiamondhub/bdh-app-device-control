@@ -389,16 +389,6 @@ DECK_DEVICES = {
 }
 
 # ──────────────────────────────────────────────
-# Tab: Fireplace
-# ──────────────────────────────────────────────
-# The fireplace tab renders the napoleon-fireplace-card Lovelace card from the
-# hass-napoleon Home Assistant integration (proxied same-origin by
-# views.device_control_fireplace_card). Fireplaces are discovered from HA's
-# entity registry (platform "napoleon"), so the tab carries no hard-coded
-# entities ("devices" is empty so get_all_entity_ids() is unaffected). Rename a
-# fireplace in HA to change its name here.
-
-# ──────────────────────────────────────────────
 # All tabs in display order
 # ──────────────────────────────────────────────
 TABS = [
@@ -410,7 +400,6 @@ TABS = [
     {"key": "deck", "label": "Deck", "icon": "fa-grip-lines", "devices": DECK_DEVICES},
     {"key": "tvs", "label": "TVs", "icon": "fa-tv", "devices": TV_DEVICES},
     {"key": "sonos", "label": "Sonos", "icon": "fa-music", "devices": SONOS_DEVICES},
-    {"key": "fireplace", "label": "Fireplace", "icon": "fa-fire", "devices": {}},
 ]
 
 
