@@ -14,7 +14,7 @@ spec = PluginSpec(
             url_name="device_control",
             icon="device_control/hub/icon.svg",
             section="lodge",
-            subtitle="Lights, shades, fireplaces & more",
+            subtitle="Lights, shades, scenes & more",
             order=10,
         ),
     ),
@@ -27,16 +27,12 @@ spec = PluginSpec(
         ),
     ),
     api_version=2,
-    # Lights/switches/shades tabs, scenes, and the Napoleon fireplace card
-    # (climate + its switch/light/number/select entities).
+    # Lights/switches/shades tabs and scenes.
     permissions=(
         "ha.read:switch.*",
         "ha.read:light.*",
         "ha.read:cover.*",
         "ha.read:scene.*",
-        "ha.read:climate.*",
-        "ha.read:number.*",
-        "ha.read:select.*",
         "ha.call:switch.turn_on",
         "ha.call:switch.turn_off",
         "ha.call:switch.toggle",
@@ -48,18 +44,10 @@ spec = PluginSpec(
         "ha.call:cover.stop_cover",
         "ha.call:cover.set_cover_position",
         "ha.call:scene.turn_on",
-        "ha.call:climate.set_hvac_mode",
-        "ha.call:climate.set_preset_mode",
-        "ha.call:climate.set_temperature",
-        "ha.call:climate.turn_off",
-        "ha.call:number.set_value",
-        "ha.call:select.select_option",
-        # The fireplace card's JS is served from HA's /napoleon_static/.
-        "media",
     ),
     # Home Assistant is reached through the hub broker; nothing else is needed.
     network=NETWORK_NONE,
-    # Keeps the homepage fireplace/lights status live (on_demand would let it go
+    # Keeps the homepage lights status live (on_demand would let it go
     # hours stale while the app sleeps).
     lifecycle=LIFECYCLE_ALWAYS,
     memory_mb=96,
