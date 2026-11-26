@@ -577,3 +577,123 @@ class BrokerTests(TestCase):
         self.assertNotIn("fireplace", result.text.lower())
         self.assertEqual([s.id for s in shortcuts()], ["scene-movie"])
         self.assertFalse(self.broker.ops("ha.registry"))
+
+
+class AssistantToolTests(TestCase):
+    """The assistant's scene tools, run the way the hub runs them (FakeBroker sessions)."""
+
+    STATES = ScenesTests.STATES
+
+    def setUp(self):
+        from bdh_sdk import Stay
+        from bdh_sdk.testing import FakeBroker
+
+        self.broker = FakeBroker(grants=("settings.get", "ha.get_all_states", "ha.call_service", "tools.*"),
+                                 install=True, app_id="device_control")
+        self.broker.start()
+        self.addCleanup(self.broker.stop)
+        self.states = list(self.STATES)
+        self.broker.on("ha.get_all_states", lambda p: self.states)
+        self.service_result = [True, None]
+        self.broker.on("ha.call_service", lambda p: self.service_result)
+        self.broker.stay = Stay(guest="Smith")  # a voice session during a stay is in guest mode
+
+    def session(self, mode="guest"):
+        """Offer the app's tools for ``mode`` the way the hub does and open a session."""
+        from bdh_sdk import tools as sdk_tools
+        from device_control import assistant
+
+        self.broker.assistant_tools.clear()
+        for tool in assistant.tools(mode=mode):
+            self.broker.add_tool(tool, lambda args, t=tool.id: assistant.run_tool(t, args, mode=mode))
+        return sdk_tools.open_session()
+
+    def call(self, name, args=None):
+        from bdh_sdk import tools as sdk_tools
+        return sdk_tools.call_tool(self.session(), name, args)
+
+    def test_every_mode_gets_both_tools_with_the_scene_names(self):
+        from bdh_sdk import ALL_MODES
+        from device_control import assistant
+        for mode in sorted(ALL_MODES):
+            with self.subTest(mode=mode):
+                tools = {t.id: t for t in assistant.tools(mode=mode)}
+                self.assertEqual(list(tools), ["list_scenes", "activate_scene"])
+                self.assertEqual(tools["list_scenes"].modes, ALL_MODES)
+                self.assertTrue(tools["list_scenes"].readonly)
+                self.assertEqual(tools["activate_scene"].modes, ALL_MODES)
+                self.assertFalse(tools["activate_scene"].readonly)
+                self.assertEqual(tools["activate_scene"].params["properties"]["scene"]["enum"],
+                                 ["Movie", "Party"])
+
+    def test_guest_session_lists_the_tools(self):
+        from bdh_sdk import tools as sdk_tools
+        listed = sdk_tools.list_tools(self.session())
+        self.assertEqual([t["name"] for t in listed], ["activate_scene", "list_scenes"])
+
+    def test_list_scenes(self):
+        self.assertEqual(self.call("list_scenes"), {"ok": True, "result": "Scenes: Movie, Party."})
+
+    def test_list_scenes_honours_the_filter(self):
+        with patch("device_control.scenes.scene_filter", return_value=["party"]):
+            self.assertEqual(self.call("list_scenes")["result"], "Scenes: Party.")
+            from device_control import assistant
+            (_, activate) = assistant.tools()
+            self.assertEqual(activate.params["properties"]["scene"]["enum"], ["Party"])
+
+    def test_activate_scene(self):
+        self.assertEqual(self.call("activate_scene", {"scene": "Movie"}),
+                         {"ok": True, "result": "The Movie scene is on."})
+        (call,) = self.broker.ops("ha.call_service")
+        self.assertEqual((call["domain"], call["service"], call["entity_id"]), ("scene", "turn_on", "scene.movie"))
+
+    def test_bad_arguments_never_reach_home_assistant(self):
+        for args in ({}, {"scene": "Disco"}, {"scene": 3}, {"scene": "Movie", "room": "den"}):
+            with self.subTest(args=args):
+                answer = self.call("activate_scene", args)
+                self.assertFalse(answer["ok"])
+                self.assertIn("invalid arguments", answer["error"])
+        self.assertEqual(self.broker.ops("ha.call_service"), [])
+
+    def test_names_match_loosely_and_unknown_ones_list_the_scenes(self):
+        from bdh_sdk.tools import ToolError
+        from device_control.assistant import run_tool
+        self.assertEqual(run_tool("activate_scene", {"scene": "  movie  scene"}), "The Movie scene is on.")
+        self.assertEqual(run_tool("activate_scene", {"scene": "scene.party"}), "The Party scene is on.")
+        with self.assertRaisesRegex(ToolError, "no scene called 'Disco'.*Movie, Party"):
+            run_tool("activate_scene", {"scene": "Disco"})
+        with self.assertRaises(ToolError):
+            run_tool("nope", {})
+
+    def test_failed_scene_is_reported(self):
+        self.service_result = [False, "boom"]
+        answer = self.call("activate_scene", {"scene": "Party"})
+        self.assertEqual(answer, {"ok": False, "error": "The Party scene didn't start: Home Assistant reported a problem."})
+
+    def test_no_scenes(self):
+        self.states = [s for s in self.states if not s["entity_id"].startswith("scene.")]
+        from device_control import assistant
+        (_, activate) = assistant.tools()
+        self.assertNotIn("enum", activate.params["properties"]["scene"])
+        self.assertEqual(self.call("list_scenes")["result"], assistant.NO_SCENES)
+        self.assertEqual(self.call("activate_scene", {"scene": "Movie"})["error"], assistant.NO_SCENES)
+
+    def test_home_assistant_down(self):
+        from device_control import assistant
+        patcher = patch("device_control.scenes.get_all_states", side_effect=views.HAError("down"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        tools = assistant.tools()
+        self.assertEqual([t.id for t in tools], ["list_scenes", "activate_scene"])
+        self.assertNotIn("enum", tools[1].params["properties"]["scene"])
+        self.assertEqual(self.call("list_scenes"), {"ok": False, "error": assistant.HA_DOWN})
+        self.assertEqual(self.call("activate_scene", {"scene": "Movie"}), {"ok": False, "error": assistant.HA_DOWN})
+
+    def test_hooks_serialise(self):
+        from bdh_sdk import hooks
+        from device_control.plugin import spec
+        listed = hooks.run(spec, "tools", mode="guest")
+        self.assertEqual([t["id"] for t in listed], ["list_scenes", "activate_scene"])
+        self.assertEqual(listed[1]["modes"], ["dashboard", "guest", "owner"])
+        self.assertEqual(hooks.run(spec, "run_tool", tool_id="list_scenes", args={}, mode="guest"),
+                         "Scenes: Movie, Party.")

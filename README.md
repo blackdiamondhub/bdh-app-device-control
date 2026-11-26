@@ -34,6 +34,22 @@ permissions are gone.
 Settings to seed on the hub: `scenes_filter`. In the container it comes from the hub through
 the broker; hub environment variables are not visible to the app.
 
+## Assistant tools
+
+The hub's assistant (voice/chat, bdh-sdk 0.46+ `tools` / `run_tool`) can use the scenes.
+Both tools are offered in every mode (guest, dashboard and owner), the same as the
+homepage scene shortcuts, and only see the scenes the **Scenes to show** setting allows.
+
+| Tool | Read-only | Params | Does |
+| --- | --- | --- | --- |
+| `list_scenes` | yes | none | "Scenes: Movie, Dinner." |
+| `activate_scene` | no | `scene` (string; an enum of the current scene names when HA answers) | Turns the scene on: "The Movie scene is on." |
+
+`activate_scene` also accepts a name in any case, the `scene.` entity id, or a trailing
+"scene"; an unknown name fails with a message listing the scenes. When Home Assistant is
+down both tools are still offered and fail with "Home Assistant isn't answering right now".
+Lights and blinds aren't tools yet.
+
 CI's `image` job (from bdh-sdk's `app-ci.yml`) locks the dependencies
 against the hub's app runtime, builds the app's image and smoke-tests it
 the way the supervisor runs it.
