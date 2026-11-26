@@ -8,6 +8,9 @@ spec = PluginSpec(
     status="device_control.homepage.status",
     shortcuts="device_control.homepage.shortcuts",
     run_shortcut="device_control.homepage.run_shortcut",
+    # The assistant can list and activate scenes, like the homepage shortcuts.
+    tools="device_control.assistant.tools",
+    run_tool="device_control.assistant.run_tool",
     tiles=(
         Tile(
             title="Controls",
