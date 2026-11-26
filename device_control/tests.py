@@ -612,13 +612,13 @@ class AssistantToolTests(TestCase):
         from bdh_sdk import tools as sdk_tools
         return sdk_tools.call_tool(self.session(), name, args)
 
-    def test_every_mode_gets_both_tools_with_the_scene_names(self):
+    def test_every_mode_gets_the_tools_with_the_scene_names(self):
         from bdh_sdk import ALL_MODES
         from device_control import assistant
         for mode in sorted(ALL_MODES):
             with self.subTest(mode=mode):
                 tools = {t.id: t for t in assistant.tools(mode=mode)}
-                self.assertEqual(list(tools), ["list_scenes", "activate_scene"])
+                self.assertEqual(list(tools), ["list_scenes", "activate_scene", "list_blinds", "set_blinds"])
                 self.assertEqual(tools["list_scenes"].modes, ALL_MODES)
                 self.assertTrue(tools["list_scenes"].readonly)
                 self.assertEqual(tools["activate_scene"].modes, ALL_MODES)
@@ -629,7 +629,7 @@ class AssistantToolTests(TestCase):
     def test_guest_session_lists_the_tools(self):
         from bdh_sdk import tools as sdk_tools
         listed = sdk_tools.list_tools(self.session())
-        self.assertEqual([t["name"] for t in listed], ["activate_scene", "list_scenes"])
+        self.assertEqual([t["name"] for t in listed], ["activate_scene", "list_blinds", "list_scenes", "set_blinds"])
 
     def test_list_scenes(self):
         self.assertEqual(self.call("list_scenes"), {"ok": True, "result": "Scenes: Movie, Party."})
@@ -638,7 +638,7 @@ class AssistantToolTests(TestCase):
         with patch("device_control.scenes.scene_filter", return_value=["party"]):
             self.assertEqual(self.call("list_scenes")["result"], "Scenes: Party.")
             from device_control import assistant
-            (_, activate) = assistant.tools()
+            activate = assistant.tools()[1]
             self.assertEqual(activate.params["properties"]["scene"]["enum"], ["Party"])
 
     def test_activate_scene(self):
@@ -673,7 +673,7 @@ class AssistantToolTests(TestCase):
     def test_no_scenes(self):
         self.states = [s for s in self.states if not s["entity_id"].startswith("scene.")]
         from device_control import assistant
-        (_, activate) = assistant.tools()
+        activate = assistant.tools()[1]
         self.assertNotIn("enum", activate.params["properties"]["scene"])
         self.assertEqual(self.call("list_scenes")["result"], assistant.NO_SCENES)
         self.assertEqual(self.call("activate_scene", {"scene": "Movie"})["error"], assistant.NO_SCENES)
@@ -684,7 +684,7 @@ class AssistantToolTests(TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         tools = assistant.tools()
-        self.assertEqual([t.id for t in tools], ["list_scenes", "activate_scene"])
+        self.assertEqual([t.id for t in tools], ["list_scenes", "activate_scene", "list_blinds", "set_blinds"])
         self.assertNotIn("enum", tools[1].params["properties"]["scene"])
         self.assertEqual(self.call("list_scenes"), {"ok": False, "error": assistant.HA_DOWN})
         self.assertEqual(self.call("activate_scene", {"scene": "Movie"}), {"ok": False, "error": assistant.HA_DOWN})
@@ -693,7 +693,179 @@ class AssistantToolTests(TestCase):
         from bdh_sdk import hooks
         from device_control.plugin import spec
         listed = hooks.run(spec, "tools", mode="guest")
-        self.assertEqual([t["id"] for t in listed], ["list_scenes", "activate_scene"])
+        self.assertEqual([t["id"] for t in listed], ["list_scenes", "activate_scene", "list_blinds", "set_blinds"])
         self.assertEqual(listed[1]["modes"], ["dashboard", "guest", "owner"])
+        self.assertEqual(listed[3]["modes"], ["dashboard", "guest", "owner"])
         self.assertEqual(hooks.run(spec, "run_tool", tool_id="list_scenes", args={}, mode="guest"),
                          "Scenes: Movie, Party.")
+
+
+class AssistantBlindToolTests(TestCase):
+    """The assistant's blind tools: loose names, rooms, floors, positions, HA down."""
+
+    def setUp(self):
+        from bdh_sdk import Stay
+        from bdh_sdk.testing import FakeBroker
+
+        self.broker = FakeBroker(grants=("settings.get", "ha.get_all_states", "ha.get_entity_states",
+                                         "ha.call_service", "tools.*"),
+                                 install=True, app_id="device_control")
+        self.broker.start()
+        self.addCleanup(self.broker.stop)
+        self.broker.stay = Stay(guest="Smith")
+        self.broker.on("ha.get_all_states", lambda p: [])
+        self.states = {
+            "cover.kitchen_left_window": {"state": "open", "attributes": {"current_position": 100}},
+            "cover.kitchen_right_window": {"state": "open", "attributes": {"current_position": 40}},
+            "cover.living_room_large_window_shade": {"state": "closing", "attributes": {"current_position": 70}},
+            "cover.living_room_small_window": {"state": "closed", "attributes": {"current_position": 0}},
+            "cover.office_large_window_shades": {"state": "closed", "attributes": {}},
+        }
+        self.broker.on("ha.get_entity_states",
+                       lambda p: {eid: dict(self.states[eid], entity_id=eid)
+                                  for eid in p["entity_ids"] if eid in self.states})
+        self.failing = set()
+        self.broker.on("ha.call_service",
+                       lambda p: [False, "boom"] if p["entity_id"] in self.failing else [True, None])
+
+    def call(self, name, args=None, mode="guest"):
+        from bdh_sdk import tools as sdk_tools
+        from device_control import assistant
+
+        self.broker.assistant_tools.clear()
+        for tool in assistant.tools(mode=mode):
+            self.broker.add_tool(tool, lambda a, t=tool.id: assistant.run_tool(t, a, mode=mode))
+        return sdk_tools.call_tool(sdk_tools.open_session(), name, args)
+
+    def moved(self):
+        return [(c["service"], c["entity_id"], c.get("extra_data"))
+                for c in self.broker.ops("ha.call_service")]
+
+    def test_every_mode_gets_the_blind_tools(self):
+        from bdh_sdk import ALL_MODES
+        from device_control import assistant
+        for mode in sorted(ALL_MODES):
+            with self.subTest(mode=mode):
+                tools = {t.id: t for t in assistant.tools(mode=mode)}
+                self.assertEqual(tools["list_blinds"].modes, ALL_MODES)
+                self.assertTrue(tools["list_blinds"].readonly)
+                self.assertEqual(tools["set_blinds"].modes, ALL_MODES)
+                self.assertFalse(tools["set_blinds"].readonly)
+                self.assertEqual(tools["set_blinds"].params["required"], ["action", "blinds"])
+
+    def test_every_blind_matches_its_own_name_with_or_without_device_words(self):
+        # Regression (fireplace bug class): normalise both sides, so a suffix like
+        # "Window"/"Shade" on the request or on the name never stops a match.
+        from device_control import blinds
+        for b in blinds.blinds():
+            base = b["label"]
+            for word in (" Window", " Shades", " Shade", " Roller Shade"):
+                base = base.removesuffix(word)
+            for text in (b["label"], f"the {b['label']} blinds", b["label"].lower(), base,
+                         f"{base} shade", f"{base} window blinds", f"  the  {base.upper()}  "):
+                with self.subTest(text=text):
+                    self.assertEqual([x["entity_id"] for x in blinds.resolve(text)], [b["entity_id"]])
+
+    def test_suffix_on_either_side(self):
+        self.assertEqual(self.call("set_blinds", {"action": "close", "blinds": "living room large window shade"}),
+                         {"ok": True, "result": "Closing the Living Room Large Window blind."})
+        self.assertEqual(self.call("set_blinds", {"action": "open", "blinds": "Office Large blinds"})["result"],
+                         "Opening the Office Large Window blind.")
+        self.assertEqual(self.moved(), [("close_cover", "cover.living_room_large_window_shade", None),
+                                        ("open_cover", "cover.office_large_window_shades", None)])
+
+    def test_a_room_moves_its_blinds(self):
+        self.assertEqual(self.call("set_blinds", {"action": "close", "blinds": "all the kitchen blinds"})["result"],
+                         "Closing the Kitchen Left Window and Kitchen Right Window blinds.")
+        self.assertEqual([e for _, e, _ in self.moved()],
+                         ["cover.kitchen_left_window", "cover.kitchen_right_window"])
+
+    def test_several_targets_in_one_call(self):
+        result = self.call("set_blinds", {"action": "open", "blinds": "office small, kitchen left and the bbq deck"})
+        self.assertEqual(result["result"],
+                         "Opening the Kitchen Left Window, Office Small Window and BBQ Deck Roller Shade.")
+        self.assertEqual([e for _, e, _ in self.moved()],
+                         ["cover.kitchen_left_window", "cover.office_small_window", "cover.bbq_deck_roller_shade"])
+
+    def test_position(self):
+        result = self.call("set_blinds", {"action": "position", "position": 50, "blinds": "living room"})
+        self.assertEqual(result["result"],
+                         "Setting the Living Room Large Window and Living Room Small Window blinds to 50% open.")
+        self.assertEqual(self.moved(), [
+            ("set_cover_position", "cover.living_room_large_window_shade", {"position": 50}),
+            ("set_cover_position", "cover.living_room_small_window", {"position": 50}),
+        ])
+        from device_control.assistant import NO_POSITION
+        self.assertEqual(self.call("set_blinds", {"action": "position", "blinds": "kitchen"}),
+                         {"ok": False, "error": NO_POSITION})
+        self.assertFalse(self.call("set_blinds", {"action": "position", "position": 101, "blinds": "kitchen"})["ok"])
+        self.assertEqual(len(self.moved()), 2)
+
+    def test_floors_and_everything(self):
+        self.assertEqual(self.call("set_blinds", {"action": "close", "blinds": "upstairs"})["result"],
+                         "Closing 6 blinds on the Upper Floor.")
+        self.broker.calls.clear()
+        self.assertEqual(self.call("set_blinds", {"action": "stop", "blinds": "all"})["result"],
+                         "Stopping all the blinds.")
+        moved = [e for _, e, _ in self.moved()]
+        # The deck's group cover moves the deck shades, so they aren't called one by one.
+        self.assertIn("cover.all_deck_roller_shades", moved)
+        self.assertNotIn("cover.left_deck_roller_shade", moved)
+        self.assertEqual(len(moved), 18)
+        self.broker.calls.clear()
+        self.assertEqual(self.call("set_blinds", {"action": "close", "blinds": "deck"})["result"],
+                         "Closing all the Deck Roller Shades.")
+
+    def test_ambiguous_room_asks_and_moves_nothing(self):
+        answer = self.call("set_blinds", {"action": "close", "blinds": "master bedroom"})
+        self.assertFalse(answer["ok"])
+        self.assertIn("more than one floor", answer["error"])
+        self.assertIn("Basement", answer["error"])
+        self.assertIn("Upper Floor", answer["error"])
+        self.assertEqual(self.moved(), [])
+        self.assertTrue(self.call("set_blinds", {"action": "close", "blinds": "upstairs master bedroom"})["ok"])
+        self.assertEqual(len(self.moved()), 6)
+
+    def test_unknown_name_lists_floors_and_blinds(self):
+        answer = self.call("set_blinds", {"action": "open", "blinds": "garage door"})
+        self.assertFalse(answer["ok"])
+        self.assertIn("no blinds called 'garage door'", answer["error"])
+        self.assertIn("Main Floor", answer["error"])
+        self.assertIn("Kitchen Left Window", answer["error"])
+        answer = self.call("set_blinds", {"action": "open", "blinds": "kitchen and garage"})
+        self.assertIn("no blinds called 'garage'", answer["error"])
+        self.assertEqual(self.moved(), [])
+
+    def test_list_blinds(self):
+        result = self.call("list_blinds", {"blinds": "great room"})["result"]
+        self.assertEqual(result, "Main Floor: Kitchen Left Window open, Kitchen Right Window 40% open, "
+                                 "Living Room Large Window closing, Living Room Small Window closed.")
+        full = self.call("list_blinds")["result"]
+        self.assertTrue(full.startswith("Basement: Game Area Small Window unknown"))
+        self.assertIn("Office Large Window closed", full)
+        self.assertIn("Deck / Exterior: BBQ Deck Roller Shade unknown", full)
+        self.assertNotIn("All Deck", full)
+        self.states["cover.kitchen_left_window"] = {"state": "closed", "attributes": {"current_position": 0}}
+        self.states["cover.kitchen_right_window"] = {"state": "closed", "attributes": {}}
+        self.assertEqual(self.call("list_blinds", {"blinds": "kitchen"})["result"],
+                         "All closed. Main Floor: Kitchen Left Window closed, Kitchen Right Window closed.")
+
+    def test_partial_failure_is_reported(self):
+        self.failing = {"cover.kitchen_right_window"}
+        self.assertEqual(self.call("set_blinds", {"action": "open", "blinds": "kitchen"})["result"],
+                         "Opening the Kitchen Left Window blind. The Kitchen Right Window blind didn't respond.")
+        self.failing = {"cover.kitchen_left_window", "cover.kitchen_right_window"}
+        self.assertEqual(self.call("set_blinds", {"action": "open", "blinds": "kitchen"}),
+                         {"ok": False, "error": "Home Assistant couldn't move the Kitchen Left Window and "
+                                                "Kitchen Right Window blinds."})
+
+    def test_home_assistant_down(self):
+        from device_control import assistant
+        self.broker.grants = ["settings.get", "tools.*"]  # every HA call is refused
+        self.assertEqual([t.id for t in assistant.tools()][2:], ["list_blinds", "set_blinds"])
+        self.assertEqual(self.call("list_blinds"), {"ok": False, "error": assistant.BLINDS_DOWN})
+        self.assertEqual(self.call("set_blinds", {"action": "close", "blinds": "kitchen"}),
+                         {"ok": False, "error": assistant.BLINDS_DOWN})
+        self.broker.grants = ["settings.get", "ha.get_entity_states", "tools.*"]
+        self.states = {}  # HA answers with nothing
+        self.assertEqual(self.call("list_blinds"), {"ok": False, "error": assistant.BLINDS_DOWN})
