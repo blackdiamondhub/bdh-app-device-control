@@ -36,19 +36,33 @@ the broker; hub environment variables are not visible to the app.
 
 ## Assistant tools
 
-The hub's assistant (voice/chat, bdh-sdk 0.46+ `tools` / `run_tool`) can use the scenes.
-Both tools are offered in every mode (guest, dashboard and owner), the same as the
-homepage scene shortcuts, and only see the scenes the **Scenes to show** setting allows.
+The hub's assistant (voice/chat, bdh-sdk 0.46+ `tools` / `run_tool`) can use the scenes
+and the Shades tab's blinds. Every tool is offered in every mode (guest, dashboard and
+owner), the same as the Scenes/Shades tabs and the homepage scene shortcuts. The scene
+tools only see the scenes the **Scenes to show** setting allows.
 
 | Tool | Read-only | Params | Does |
 | --- | --- | --- | --- |
 | `list_scenes` | yes | none | "Scenes: Movie, Dinner." |
 | `activate_scene` | no | `scene` (string; an enum of the current scene names when HA answers) | Turns the scene on: "The Movie scene is on." |
+| `list_blinds` | yes | `blinds` (optional string, as below) | "Main Floor: Kitchen Left Window open, Kitchen Right Window 40% open." |
+| `set_blinds` | no | `action` (`open`/`close`/`stop`/`position`), `position` (0 closed – 100 open, for `position`), `blinds` (string) | "Closing the Kitchen Left Window and Kitchen Right Window blinds." |
 
 `activate_scene` also accepts a name in any case, the `scene.` entity id, or a trailing
 "scene"; an unknown name fails with a message listing the scenes. When Home Assistant is
-down both tools are still offered and fail with "Home Assistant isn't answering right now".
-Lights and blinds aren't tools yet.
+down all tools are still offered and fail with "Home Assistant isn't answering right now".
+
+`blinds` is free text (`device_control/blinds.py`): a blind's name, a room ("kitchen",
+"living room"), a floor (the Shades tab groups, plus "downstairs", "upstairs", "main",
+"deck", "outside"), "great room" (kitchen + living room), "all", or several joined by
+commas/"and". Request and names are normalised the same way (case, plurals, and words
+like "the", "blind(s)", "shade(s)", "window", "roller" dropped on both sides). A room that
+spans floors ("master bedroom") fails with a question listing the options unless the
+request says "all"; an unknown name fails listing the floors and blinds. Names that repeat
+on two floors are prefixed with the floor ("Basement Master Bedroom Large Window"). The
+deck's "All Deck Roller Shades" group cover is used instead of the single deck shades when
+a request covers them all, and `list_blinds` lists the single shades instead. Lights
+aren't tools yet.
 
 CI's `image` job (from bdh-sdk's `app-ci.yml`) locks the dependencies
 against the hub's app runtime, builds the app's image and smoke-tests it
