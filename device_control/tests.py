@@ -618,7 +618,7 @@ class AssistantToolTests(TestCase):
         for mode in sorted(ALL_MODES):
             with self.subTest(mode=mode):
                 tools = {t.id: t for t in assistant.tools(mode=mode)}
-                self.assertEqual(list(tools), ["list_scenes", "activate_scene", "list_blinds", "set_blinds"])
+                self.assertEqual(list(tools), ["list_scenes", "activate_scene", "list_blinds", "set_blinds", "list_lights", "set_lights"])
                 self.assertEqual(tools["list_scenes"].modes, ALL_MODES)
                 self.assertTrue(tools["list_scenes"].readonly)
                 self.assertEqual(tools["activate_scene"].modes, ALL_MODES)
@@ -629,7 +629,7 @@ class AssistantToolTests(TestCase):
     def test_guest_session_lists_the_tools(self):
         from bdh_sdk import tools as sdk_tools
         listed = sdk_tools.list_tools(self.session())
-        self.assertEqual([t["name"] for t in listed], ["activate_scene", "list_blinds", "list_scenes", "set_blinds"])
+        self.assertEqual([t["name"] for t in listed], ["activate_scene", "list_blinds", "list_lights", "list_scenes", "set_blinds", "set_lights"])
 
     def test_list_scenes(self):
         self.assertEqual(self.call("list_scenes"), {"ok": True, "result": "Scenes: Movie, Party."})
@@ -684,7 +684,7 @@ class AssistantToolTests(TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         tools = assistant.tools()
-        self.assertEqual([t.id for t in tools], ["list_scenes", "activate_scene", "list_blinds", "set_blinds"])
+        self.assertEqual([t.id for t in tools], ["list_scenes", "activate_scene", "list_blinds", "set_blinds", "list_lights", "set_lights"])
         self.assertNotIn("enum", tools[1].params["properties"]["scene"])
         self.assertEqual(self.call("list_scenes"), {"ok": False, "error": assistant.HA_DOWN})
         self.assertEqual(self.call("activate_scene", {"scene": "Movie"}), {"ok": False, "error": assistant.HA_DOWN})
@@ -693,7 +693,7 @@ class AssistantToolTests(TestCase):
         from bdh_sdk import hooks
         from device_control.plugin import spec
         listed = hooks.run(spec, "tools", mode="guest")
-        self.assertEqual([t["id"] for t in listed], ["list_scenes", "activate_scene", "list_blinds", "set_blinds"])
+        self.assertEqual([t["id"] for t in listed], ["list_scenes", "activate_scene", "list_blinds", "set_blinds", "list_lights", "set_lights"])
         self.assertEqual(listed[1]["modes"], ["dashboard", "guest", "owner"])
         self.assertEqual(listed[3]["modes"], ["dashboard", "guest", "owner"])
         self.assertEqual(hooks.run(spec, "run_tool", tool_id="list_scenes", args={}, mode="guest"),
@@ -862,10 +862,212 @@ class AssistantBlindToolTests(TestCase):
     def test_home_assistant_down(self):
         from device_control import assistant
         self.broker.grants = ["settings.get", "tools.*"]  # every HA call is refused
-        self.assertEqual([t.id for t in assistant.tools()][2:], ["list_blinds", "set_blinds"])
+        self.assertEqual([t.id for t in assistant.tools()][2:4], ["list_blinds", "set_blinds"])
         self.assertEqual(self.call("list_blinds"), {"ok": False, "error": assistant.BLINDS_DOWN})
         self.assertEqual(self.call("set_blinds", {"action": "close", "blinds": "kitchen"}),
                          {"ok": False, "error": assistant.BLINDS_DOWN})
         self.broker.grants = ["settings.get", "ha.get_entity_states", "tools.*"]
         self.states = {}  # HA answers with nothing
         self.assertEqual(self.call("list_blinds"), {"ok": False, "error": assistant.BLINDS_DOWN})
+
+
+class AssistantLightToolTests(TestCase):
+    """The assistant's light tools: rooms, generic names, floors, brightness, ambiguity, HA down."""
+
+    def setUp(self):
+        from bdh_sdk import Stay
+        from bdh_sdk.testing import FakeBroker
+        from device_control import lights
+
+        self.broker = FakeBroker(grants=("settings.get", "ha.get_all_states", "ha.get_entity_states",
+                                         "ha.call_service", "tools.*"),
+                                 install=True, app_id="device_control")
+        self.broker.start()
+        self.addCleanup(self.broker.stop)
+        self.broker.stay = Stay(guest="Smith")
+        self.broker.on("ha.get_all_states", lambda p: [])
+        dims = {"supported_color_modes": ["brightness"]}
+        self.states = {d["entity_id"]: {"state": "off", "attributes": dict(dims)} for d in lights.lights()}
+        self.states["light.hot_tub_light"]["attributes"] = {"supported_color_modes": ["onoff"]}
+        self.states["switch.exterior_lower_deck_sconces"]["attributes"] = {}
+        self.broker.on("ha.get_entity_states",
+                       lambda p: {eid: dict(self.states[eid], entity_id=eid)
+                                  for eid in p["entity_ids"] if eid in self.states})
+        self.failing = set()
+        self.broker.on("ha.call_service",
+                       lambda p: [False, "boom"] if p["entity_id"] in self.failing else [True, None])
+
+    def turn_on(self, *entity_ids, brightness=255):
+        for eid in entity_ids:
+            self.states[eid] = {"state": "on", "attributes": {"brightness": brightness,
+                                                              "supported_color_modes": ["brightness"]}}
+
+    def call(self, name, args=None, mode="guest"):
+        from bdh_sdk import tools as sdk_tools
+        from device_control import assistant
+
+        self.broker.assistant_tools.clear()
+        for tool in assistant.tools(mode=mode):
+            self.broker.add_tool(tool, lambda a, t=tool.id: assistant.run_tool(t, a, mode=mode))
+        return sdk_tools.call_tool(sdk_tools.open_session(), name, args)
+
+    def switched(self):
+        return [(c["domain"], c["service"], c["entity_id"], c.get("extra_data"))
+                for c in self.broker.ops("ha.call_service")]
+
+    def test_every_mode_gets_the_light_tools(self):
+        from bdh_sdk import ALL_MODES
+        from device_control import assistant
+        for mode in sorted(ALL_MODES):
+            with self.subTest(mode=mode):
+                tools = {t.id: t for t in assistant.tools(mode=mode)}
+                self.assertEqual(tools["list_lights"].modes, ALL_MODES)
+                self.assertTrue(tools["list_lights"].readonly)
+                self.assertEqual(tools["set_lights"].modes, ALL_MODES)
+                self.assertFalse(tools["set_lights"].readonly)
+                self.assertEqual(tools["set_lights"].params["required"], ["action", "lights"])
+                self.assertIn("set_lights", tools["activate_scene"].description)
+
+    def test_every_light_matches_its_own_name_with_or_without_device_words(self):
+        # Regression (fireplace bug class): normalise both sides, so "lights"/"lamp"
+        # on the request or on the name never stops a match.
+        from device_control import lights
+        labels = [d["label"] for d in lights.lights()]
+        self.assertEqual(len(labels), len(set(labels)))
+        for d in lights.lights():
+            base = d["label"]
+            for word in (" Lights", " Light", " Lamp"):
+                base = base.removesuffix(word)
+            for text in (d["label"], f"the {d['label']} lights", d["label"].lower(), base,
+                         f"{base} light", f"{base} lamp", f"  the  {base.upper()}  "):
+                with self.subTest(text=text):
+                    self.assertEqual([x["entity_id"] for x in lights.resolve(text)], [d["entity_id"]])
+
+    def test_a_room_switches_all_its_lights(self):
+        self.assertEqual(self.call("set_lights", {"action": "off", "lights": "living room lights"}),
+                         {"ok": True, "result": "The Living Room Main Lights are off."})
+        self.assertEqual(self.call("set_lights", {"action": "off", "lights": "the kitchen lights"})["result"],
+                         "The Kitchen lights are off.")
+        self.assertEqual(self.switched(), [
+            ("light", "turn_off", "light.living_room_main_lights", None),
+            ("light", "turn_off", "light.kitchen_main_lights", None),
+            ("light", "turn_off", "light.kitchen_island_pendants", None),
+            ("light", "turn_off", "light.kitchen_shelf_lights", None),
+        ])
+
+    def test_generic_names_need_a_room(self):
+        self.assertEqual(self.call("set_lights", {"action": "on", "lights": "kitchen island pendants"})["result"],
+                         "The Kitchen Island Pendants are on.")
+        self.assertEqual(self.call("set_lights", {"action": "on", "lights": "office main light"})["result"],
+                         "The Office Main Lights are on.")
+        answer = self.call("set_lights", {"action": "on", "lights": "main lights"})
+        self.assertFalse(answer["ok"])
+        self.assertIn("more than one floor", answer["error"])
+        self.assertIn("Living Room Main Lights", answer["error"])
+        self.assertEqual([e for _, _, e, _ in self.switched()],
+                         ["light.kitchen_island_pendants", "light.office_main_lights"])
+
+    def test_floors_and_everything(self):
+        self.assertEqual(self.call("set_lights", {"action": "off", "lights": "all the lights upstairs"})["result"],
+                         "The Upper Floor lights are off.")
+        self.assertEqual(len(self.switched()), 10)
+        self.broker.calls.clear()
+        self.assertEqual(self.call("set_lights", {"action": "off", "lights": "all"})["result"],
+                         "All the lights are off.")
+        switched = self.switched()
+        self.assertEqual(len(switched), 47)
+        self.assertIn(("switch", "turn_off", "switch.exterior_lower_deck_sconces", None), switched)
+        self.broker.calls.clear()
+        self.assertEqual(self.call("set_lights", {"action": "on", "lights": "basement stairs"})["result"],
+                         "The Basement Stairs lights are on.")
+        self.assertEqual([e for _, _, e, _ in self.switched()],
+                         ["light.stairs_downstairs_sconce_lights", "light.stairs_lower_step_lights"])
+
+    def test_brightness(self):
+        self.assertEqual(self.call("set_lights", {"action": "brightness", "brightness": 30,
+                                                  "lights": "dining room chandelier"})["result"],
+                         "The Dining Room Chandelier is at 30%.")
+        self.assertEqual(self.call("set_lights", {"action": "on", "brightness": 50,
+                                                  "lights": "hot tub and deck"})["result"],
+                         "The Deck lights are at 50%. The Hot Tub Light can't dim, so it is just on.")
+        self.assertEqual(self.call("set_lights", {"action": "brightness", "brightness": 0,
+                                                  "lights": "office floor lamp"})["result"],
+                         "The Office Floor Lamp is off.")
+        self.assertEqual(self.switched(), [
+            ("light", "turn_on", "light.dining_room_chandelier", {"brightness_pct": 30}),
+            ("light", "turn_on", "light.exterior_deck_ceiling_lights", {"brightness_pct": 50}),
+            ("light", "turn_on", "light.exterior_deck_sconce_lights", {"brightness_pct": 50}),
+            ("light", "turn_on", "light.hot_tub_light", None),
+            ("light", "turn_off", "light.office_table_lamp", None),
+        ])
+        from device_control.assistant import NO_BRIGHTNESS
+        self.assertEqual(self.call("set_lights", {"action": "brightness", "lights": "kitchen"}),
+                         {"ok": False, "error": NO_BRIGHTNESS})
+        self.assertFalse(self.call("set_lights", {"action": "brightness", "brightness": 101, "lights": "kitchen"})["ok"])
+        self.assertEqual(len(self.switched()), 5)
+
+    def test_ambiguous_room_asks_and_switches_nothing(self):
+        answer = self.call("set_lights", {"action": "on", "lights": "stairs light"})
+        self.assertFalse(answer["ok"])
+        for floor in ("Upper Floor", "Main Floor", "Basement"):
+            self.assertIn(floor, answer["error"])
+        self.turn_on("light.stairs_upper_step_lights", "light.stairs_lower_step_lights")
+        self.assertIn("more than one floor", self.call("set_lights", {"action": "off", "lights": "stairs"})["error"])
+        self.assertEqual(self.switched(), [])
+        self.assertEqual(self.call("set_lights", {"action": "off", "lights": "all the stairs lights"})["result"],
+                         "The Stairs lights are off.")
+        self.assertEqual(len(self.switched()), 5)
+
+    def test_turning_off_an_ambiguous_light_picks_the_one_that_is_on(self):
+        # "There's another light on the stairs. Can you turn that one off?"
+        self.turn_on("light.stairs_screen_accent_lights")
+        self.assertEqual(self.call("set_lights", {"action": "off", "lights": "the stairs light"})["result"],
+                         "The Stairs Screen Accent is off.")
+        self.assertEqual(self.switched(), [("light", "turn_off", "light.stairs_screen_accent_lights", None)])
+
+    def test_unknown_name_lists_floors_and_rooms(self):
+        answer = self.call("set_lights", {"action": "off", "lights": "garage"})
+        self.assertFalse(answer["ok"])
+        self.assertIn("no lights called 'garage'", answer["error"])
+        self.assertIn("Main Floor", answer["error"])
+        self.assertIn("Living Room", answer["error"])
+        self.assertIn("no lights called 'garage'",
+                      self.call("set_lights", {"action": "off", "lights": "kitchen and garage"})["error"])
+        self.assertEqual(self.switched(), [])
+
+    def test_list_lights(self):
+        self.assertEqual(self.call("list_lights")["result"], "All off.")
+        self.turn_on("light.living_room_main_lights", brightness=102)
+        self.turn_on("light.master_bedroom_chandelier")
+        self.assertEqual(self.call("list_lights")["result"],
+                         "2 of 47 on. Upper Floor: Master Bedroom Chandelier on at 100%. "
+                         "Main Floor: Living Room Main Lights on at 40%. The rest are off.")
+        self.assertEqual(self.call("list_lights", {"lights": "living room"})["result"],
+                         "Living Room Main Lights: on at 40%.")
+        self.assertEqual(self.call("list_lights", {"lights": "kitchen"})["result"],
+                         "All off.")
+        self.turn_on("light.kitchen_island_pendants")
+        self.assertEqual(self.call("list_lights", {"lights": "kitchen"})["result"],
+                         "Main Floor: Kitchen Main Lights off, Kitchen Island Pendants on at 100%, "
+                         "Kitchen Shelf Lights off.")
+        self.assertEqual(self.switched(), [])
+
+    def test_partial_failure_is_reported(self):
+        self.failing = {"light.kitchen_shelf_lights"}
+        self.assertEqual(self.call("set_lights", {"action": "off", "lights": "kitchen"})["result"],
+                         "The Kitchen Main Lights and Kitchen Island Pendants are off. "
+                         "The Kitchen Shelf Lights didn't respond.")
+        self.failing = {"light.living_room_main_lights"}
+        self.assertEqual(self.call("set_lights", {"action": "off", "lights": "living room"}),
+                         {"ok": False, "error": "Home Assistant couldn't switch the Living Room Main Lights."})
+
+    def test_home_assistant_down(self):
+        from device_control import assistant
+        self.broker.grants = ["settings.get", "tools.*"]  # every HA call is refused
+        self.assertEqual([t.id for t in assistant.tools()][4:], ["list_lights", "set_lights"])
+        self.assertEqual(self.call("list_lights"), {"ok": False, "error": assistant.LIGHTS_DOWN})
+        self.assertEqual(self.call("set_lights", {"action": "off", "lights": "kitchen"}),
+                         {"ok": False, "error": assistant.LIGHTS_DOWN})
+        self.broker.grants = ["settings.get", "ha.get_entity_states", "tools.*"]
+        self.states = {}  # HA answers with nothing
+        self.assertEqual(self.call("list_lights"), {"ok": False, "error": assistant.LIGHTS_DOWN})

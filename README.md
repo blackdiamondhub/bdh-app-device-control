@@ -36,9 +36,9 @@ the broker; hub environment variables are not visible to the app.
 
 ## Assistant tools
 
-The hub's assistant (voice/chat, bdh-sdk 0.46+ `tools` / `run_tool`) can use the scenes
-and the Shades tab's blinds. Every tool is offered in every mode (guest, dashboard and
-owner), the same as the Scenes/Shades tabs and the homepage scene shortcuts. The scene
+The hub's assistant (voice/chat, bdh-sdk 0.46+ `tools` / `run_tool`) can use the scenes,
+the Shades tab's blinds and the Lights tab's lights. Every tool is offered in every mode
+(guest, dashboard and owner), the same as those tabs and the homepage scene shortcuts. The scene
 tools only see the scenes the **Scenes to show** setting allows.
 
 | Tool | Read-only | Params | Does |
@@ -47,6 +47,8 @@ tools only see the scenes the **Scenes to show** setting allows.
 | `activate_scene` | no | `scene` (string; an enum of the current scene names when HA answers) | Turns the scene on: "The Movie scene is on." |
 | `list_blinds` | yes | `blinds` (optional string, as below) | "Main Floor: Kitchen Left Window open, Kitchen Right Window 40% open." |
 | `set_blinds` | no | `action` (`open`/`close`/`stop`/`position`), `position` (0 closed – 100 open, for `position`), `blinds` (string) | "Closing the Kitchen Left Window and Kitchen Right Window blinds." |
+| `list_lights` | yes | `lights` (optional string, as below) | "2 of 47 on. Main Floor: Living Room Main Lights on at 40%, Kitchen Island Pendants on at 100%. The rest are off." / "All off." |
+| `set_lights` | no | `action` (`on`/`off`/`brightness`), `brightness` (0–100 %, for `brightness` or with `on`; 0 is off), `lights` (string) | "The Living Room Main Lights are off.", "The Upper Floor lights are off.", "The Dining Room Chandelier is at 30%." |
 
 `activate_scene` also accepts a name in any case, the `scene.` entity id, or a trailing
 "scene"; an unknown name fails with a message listing the scenes. When Home Assistant is
@@ -61,8 +63,23 @@ spans floors ("master bedroom") fails with a question listing the options unless
 request says "all"; an unknown name fails listing the floors and blinds. Names that repeat
 on two floors are prefixed with the floor ("Basement Master Bedroom Large Window"). The
 deck's "All Deck Roller Shades" group cover is used instead of the single deck shades when
-a request covers them all, and `list_blinds` lists the single shades instead. Lights
-aren't tools yet.
+a request covers them all, and `list_blinds` lists the single shades instead.
+
+`lights` (`device_control/lights.py`) works the same way (the matching is shared in
+`device_control/matching.py`) over the Lights tab, including its exterior lights and the
+lower-deck sconces switch. Light names repeat ("Main Lights", "Chandelier"), so each light is
+named "<room> <name>" ("Living Room Main Lights", "Dining Room Chandelier") and a room name
+("living room lights") targets every light in that room. Floors are the tab's groups plus
+"upstairs", "downstairs", "outside" (not plain "main", which is a light name); "basement stairs"
+is a room on one floor; "great room", "lounge", "game room" and "entry" are aliases; "light(s)",
+"lamp", "bulb" are dropped on both sides. A name spread over floors ("stairs", "main lights",
+"chandelier") fails with a question unless the request says "all" — except that turning it
+**off** switches off the ones that are on when they are all on one floor ("turn that stairs
+light off"). Brightness uses `brightness_pct`; lights that can't dim (on/off colour mode,
+the switch) are just turned on and the reply says so. `list_lights` names every light for
+up to 8 lights and otherwise only those that aren't off. The scene tools' descriptions steer
+the model to `set_lights` for switching or dimming lights and rooms, and to scenes only for
+a named mood.
 
 CI's `image` job (from bdh-sdk's `app-ci.yml`) locks the dependencies
 against the hub's app runtime, builds the app's image and smoke-tests it
