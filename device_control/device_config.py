@@ -384,7 +384,10 @@ GARAGE_DEVICES = {
 # ──────────────────────────────────────────────
 DECK_DEVICES = {
     "Deck": [
-        {"entity_id": "switch.patio_deck_heaters", "name": "Deck Heaters", "type": "switch", "icon": "fa-fire"},
+        # auto_off: when a guest turns it on by voice, it goes off after the
+        # "heater_auto_off_minutes" setting (see device_control/appliances.py).
+        {"entity_id": "switch.patio_deck_heaters", "name": "Deck Heaters", "type": "switch", "icon": "fa-fire",
+         "auto_off": True},
     ],
 }
 

@@ -5,7 +5,7 @@ Tests for the device_control app.
 import json
 import os
 from unittest.mock import patch, MagicMock
-from django.test import TestCase, RequestFactory, tag
+from django.test import TestCase, RequestFactory, override_settings, tag
 from django.urls import NoReverseMatch, reverse
 from django.contrib.staticfiles.testing import StaticLiveServerTestCase
 
@@ -496,9 +496,12 @@ class ManifestTests(TestCase):
                           in ("climate", "number", "select")])
         self.assertFalse([p for p in perms if p.endswith(":*") or p == "ha.read:*"])
 
-    def test_only_the_scenes_setting(self):
+    def test_settings(self):
+        from bdh_sdk.plugins import INT
         from device_control.plugin import spec
-        self.assertEqual([s.key for s in spec.settings], ["scenes_filter"])
+        self.assertEqual([s.key for s in spec.settings], ["scenes_filter", "heater_auto_off_minutes"])
+        auto_off = spec.settings[1]
+        self.assertEqual((auto_off.type, auto_off.default, auto_off.minimum), (INT, 120, 0))
 
 
 class HubFrameLayoutTests(TestCase):
@@ -618,7 +621,8 @@ class AssistantToolTests(TestCase):
         for mode in sorted(ALL_MODES):
             with self.subTest(mode=mode):
                 tools = {t.id: t for t in assistant.tools(mode=mode)}
-                self.assertEqual(list(tools), ["list_scenes", "activate_scene", "list_blinds", "set_blinds", "list_lights", "set_lights"])
+                self.assertEqual(list(tools), ["list_scenes", "activate_scene", "list_blinds", "set_blinds", "list_lights", "set_lights",
+                                       "list_heaters_fans", "set_heaters_fans"])
                 self.assertEqual(tools["list_scenes"].modes, ALL_MODES)
                 self.assertTrue(tools["list_scenes"].readonly)
                 self.assertEqual(tools["activate_scene"].modes, ALL_MODES)
@@ -629,7 +633,8 @@ class AssistantToolTests(TestCase):
     def test_guest_session_lists_the_tools(self):
         from bdh_sdk import tools as sdk_tools
         listed = sdk_tools.list_tools(self.session())
-        self.assertEqual([t["name"] for t in listed], ["activate_scene", "list_blinds", "list_lights", "list_scenes", "set_blinds", "set_lights"])
+        self.assertEqual([t["name"] for t in listed], ["activate_scene", "list_blinds", "list_heaters_fans", "list_lights", "list_scenes",
+                                                       "set_blinds", "set_heaters_fans", "set_lights"])
 
     def test_list_scenes(self):
         self.assertEqual(self.call("list_scenes"), {"ok": True, "result": "Scenes: Movie, Party."})
@@ -684,7 +689,8 @@ class AssistantToolTests(TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         tools = assistant.tools()
-        self.assertEqual([t.id for t in tools], ["list_scenes", "activate_scene", "list_blinds", "set_blinds", "list_lights", "set_lights"])
+        self.assertEqual([t.id for t in tools], ["list_scenes", "activate_scene", "list_blinds", "set_blinds", "list_lights", "set_lights",
+                                       "list_heaters_fans", "set_heaters_fans"])
         self.assertNotIn("enum", tools[1].params["properties"]["scene"])
         self.assertEqual(self.call("list_scenes"), {"ok": False, "error": assistant.HA_DOWN})
         self.assertEqual(self.call("activate_scene", {"scene": "Movie"}), {"ok": False, "error": assistant.HA_DOWN})
@@ -693,7 +699,8 @@ class AssistantToolTests(TestCase):
         from bdh_sdk import hooks
         from device_control.plugin import spec
         listed = hooks.run(spec, "tools", mode="guest")
-        self.assertEqual([t["id"] for t in listed], ["list_scenes", "activate_scene", "list_blinds", "set_blinds", "list_lights", "set_lights"])
+        self.assertEqual([t["id"] for t in listed], ["list_scenes", "activate_scene", "list_blinds", "set_blinds", "list_lights", "set_lights",
+                                       "list_heaters_fans", "set_heaters_fans"])
         self.assertEqual(listed[1]["modes"], ["dashboard", "guest", "owner"])
         self.assertEqual(listed[3]["modes"], ["dashboard", "guest", "owner"])
         self.assertEqual(hooks.run(spec, "run_tool", tool_id="list_scenes", args={}, mode="guest"),
@@ -975,7 +982,7 @@ class AssistantLightToolTests(TestCase):
         self.assertEqual(self.call("set_lights", {"action": "off", "lights": "all"})["result"],
                          "All the lights are off.")
         switched = self.switched()
-        self.assertEqual(len(switched), 47)
+        self.assertEqual(len(switched), 49)
         self.assertIn(("switch", "turn_off", "switch.exterior_lower_deck_sconces", None), switched)
         self.broker.calls.clear()
         self.assertEqual(self.call("set_lights", {"action": "on", "lights": "basement stairs"})["result"],
@@ -1026,21 +1033,32 @@ class AssistantLightToolTests(TestCase):
         self.assertEqual(self.switched(), [("light", "turn_off", "light.stairs_screen_accent_lights", None)])
 
     def test_unknown_name_lists_floors_and_rooms(self):
-        answer = self.call("set_lights", {"action": "off", "lights": "garage"})
+        answer = self.call("set_lights", {"action": "off", "lights": "attic"})
         self.assertFalse(answer["ok"])
-        self.assertIn("no lights called 'garage'", answer["error"])
+        self.assertIn("no lights called 'attic'", answer["error"])
         self.assertIn("Main Floor", answer["error"])
+        self.assertIn("Garage", answer["error"])
         self.assertIn("Living Room", answer["error"])
-        self.assertIn("no lights called 'garage'",
-                      self.call("set_lights", {"action": "off", "lights": "kitchen and garage"})["error"])
+        self.assertIn("no lights called 'attic'",
+                      self.call("set_lights", {"action": "off", "lights": "kitchen and attic"})["error"])
         self.assertEqual(self.switched(), [])
+
+    def test_garage_lights(self):
+        # The Garage tab's lights (one is a switch) are lights to the assistant too.
+        self.assertEqual(self.call("set_lights", {"action": "on", "lights": "garage lights"})["result"],
+                         "The Garage lights are on.")
+        self.assertEqual(self.switched(), [("switch", "turn_on", "switch.garage_main_lights", None),
+                                           ("light", "turn_on", "light.garage_storage_room_main_lights", None)])
+        self.states["switch.garage_main_lights"] = {"state": "on", "attributes": {}}
+        self.assertEqual(self.call("list_lights", {"lights": "garage"})["result"],
+                         "Garage: Garage Main Lights on, Garage Storage Room Lights off.")
 
     def test_list_lights(self):
         self.assertEqual(self.call("list_lights")["result"], "All off.")
         self.turn_on("light.living_room_main_lights", brightness=102)
         self.turn_on("light.master_bedroom_chandelier")
         self.assertEqual(self.call("list_lights")["result"],
-                         "2 of 47 on. Upper Floor: Master Bedroom Chandelier on at 100%. "
+                         "2 of 49 on. Upper Floor: Master Bedroom Chandelier on at 100%. "
                          "Main Floor: Living Room Main Lights on at 40%. The rest are off.")
         self.assertEqual(self.call("list_lights", {"lights": "living room"})["result"],
                          "Living Room Main Lights: on at 40%.")
@@ -1064,10 +1082,269 @@ class AssistantLightToolTests(TestCase):
     def test_home_assistant_down(self):
         from device_control import assistant
         self.broker.grants = ["settings.get", "tools.*"]  # every HA call is refused
-        self.assertEqual([t.id for t in assistant.tools()][4:], ["list_lights", "set_lights"])
+        self.assertEqual([t.id for t in assistant.tools()][4:6], ["list_lights", "set_lights"])
         self.assertEqual(self.call("list_lights"), {"ok": False, "error": assistant.LIGHTS_DOWN})
         self.assertEqual(self.call("set_lights", {"action": "off", "lights": "kitchen"}),
                          {"ok": False, "error": assistant.LIGHTS_DOWN})
         self.broker.grants = ["settings.get", "ha.get_entity_states", "tools.*"]
         self.states = {}  # HA answers with nothing
         self.assertEqual(self.call("list_lights"), {"ok": False, "error": assistant.LIGHTS_DOWN})
+
+
+class AssistantCoverageTests(TestCase):
+    """Regression for the bug class "it's on the Controls page but the assistant can't reach it"
+    ("Turn on the deck heater" -> "I can't control the deck heater from this screen")."""
+
+    def catalogs(self):
+        from device_control import appliances, blinds, lights
+        return {"set_lights": lights.CATALOG, "set_blinds": blinds.CATALOG,
+                "set_heaters_fans": appliances.CATALOG}
+
+    def test_every_controls_device_is_reachable_by_a_tool_or_deliberately_excluded(self):
+        from bdh_sdk import ALL_MODES
+        from device_control import assistant
+        catalogs = self.catalogs()
+        with patch("device_control.scenes.get_all_states", return_value=[]):
+            offered = {t.id: t for t in assistant.tools(mode="guest")}
+        for tab in TABS:
+            for group, devices in tab["devices"].items():
+                for dev in devices:
+                    eid = dev["entity_id"]
+                    with self.subTest(tab=tab["key"], entity_id=eid):
+                        if eid in assistant.NOT_FOR_ASSISTANT:
+                            continue
+                        reach = [(tool, cat) for tool, cat in catalogs.items()
+                                 if any(d["entity_id"] == eid for d in cat.items())]
+                        self.assertEqual(len(reach), 1,
+                                         f"{eid} ({dev['name']}, {tab['label']} tab) is on the Controls page but "
+                                         "no assistant tool reaches it: add it to a tool's catalog or, if guests "
+                                         "must never switch it, to assistant.NOT_FOR_ASSISTANT")
+                        tool, cat = reach[0]
+                        self.assertIn(tool, offered)
+                        self.assertEqual(offered[tool].modes, ALL_MODES)
+                        item = next(d for d in cat.items() if d["entity_id"] == eid)
+                        for text in (item["label"], dev["name"]):
+                            found = [d["entity_id"] for d in cat.resolve(text, strict=False)]
+                            self.assertIn(eid, found, f"{text!r} doesn't find {eid}")
+                        self.assertEqual([d["entity_id"] for d in cat.resolve(item["label"])], [eid])
+
+    def test_excluded_devices_are_on_a_tab_and_out_of_every_tool(self):
+        from device_control import assistant
+        self.assertLessEqual(assistant.NOT_FOR_ASSISTANT, get_all_entity_ids())
+        excluded_tabs = {tab["key"] for tab in TABS for devs in tab["devices"].values() for d in devs
+                         if d["entity_id"] in assistant.NOT_FOR_ASSISTANT}
+        self.assertEqual(excluded_tabs, {"tvs", "sonos"})
+        for tool, cat in self.catalogs().items():
+            with self.subTest(tool=tool):
+                self.assertFalse({d["entity_id"] for d in cat.items()} & assistant.NOT_FOR_ASSISTANT)
+                for text in ("TV power socket", "Sonos Arc Ultra", "deck sonos amp", "hot tub sonos amp"):
+                    found = []
+                    try:
+                        found = cat.resolve(text, strict=False)
+                    except LookupError:
+                        pass
+                    self.assertFalse({d["entity_id"] for d in found} & assistant.NOT_FOR_ASSISTANT)
+
+
+class AssistantHeaterFanToolTests(TestCase):
+    """The deck heaters and exhaust fans: names, auto-off, status, HA down."""
+
+    HEATERS = "switch.patio_deck_heaters"
+
+    def setUp(self):
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+
+        from bdh_sdk import Stay
+        from bdh_sdk.testing import FakeBroker
+        from device_control import appliances
+
+        self.broker = FakeBroker(grants=("settings.get", "ha.get_all_states", "ha.get_entity_states",
+                                         "ha.call_service", "tools.*", "state.*"),
+                                 install=True, app_id="device_control")
+        self.broker.start()
+        self.addCleanup(self.broker.stop)
+        self.broker.stay = Stay(guest="Smith")
+        self.broker.on("ha.get_all_states", lambda p: [])
+        self.states = {d["entity_id"]: {"state": "off", "attributes": {}} for d in appliances.devices()}
+        self.broker.on("ha.get_entity_states",
+                       lambda p: {eid: dict(self.states[eid], entity_id=eid)
+                                  for eid in p["entity_ids"] if eid in self.states})
+        self.failing = set()
+        self.broker.on("ha.call_service",
+                       lambda p: [False, "boom"] if p["entity_id"] in self.failing else [True, None])
+        appliances.cancel_off(self.HEATERS)
+        self.addCleanup(appliances.cancel_off, self.HEATERS)
+        self.now = dt.datetime(2026, 11, 27, 19, 40, tzinfo=ZoneInfo("America/Vancouver"))
+        tz = override_settings(TIME_ZONE="America/Vancouver", USE_TZ=True)
+        tz.enable()
+        self.addCleanup(tz.disable)
+        clock = patch("django.utils.timezone.now", side_effect=lambda: self.now)
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    def call(self, name, args=None, mode="guest"):
+        from bdh_sdk import tools as sdk_tools
+        from device_control import assistant
+
+        self.broker.assistant_tools.clear()
+        for tool in assistant.tools(mode=mode):
+            self.broker.add_tool(tool, lambda a, t=tool.id: assistant.run_tool(t, a, mode=mode))
+        return sdk_tools.call_tool(sdk_tools.open_session(), name, args)
+
+    def switched(self):
+        return [(c["domain"], c["service"], c["entity_id"]) for c in self.broker.ops("ha.call_service")]
+
+    def pending(self):
+        from device_control import appliances
+        return {eid: at.isoformat() for eid, at in appliances.pending().items()}
+
+    def test_every_mode_gets_the_tools(self):
+        from bdh_sdk import ALL_MODES
+        from device_control import assistant
+        for mode in sorted(ALL_MODES):
+            with self.subTest(mode=mode):
+                tools = {t.id: t for t in assistant.tools(mode=mode)}
+                self.assertEqual(tools["list_heaters_fans"].modes, ALL_MODES)
+                self.assertTrue(tools["list_heaters_fans"].readonly)
+                self.assertEqual(tools["set_heaters_fans"].modes, ALL_MODES)
+                self.assertFalse(tools["set_heaters_fans"].readonly)
+                self.assertEqual(tools["set_heaters_fans"].params["required"], ["action", "devices"])
+                description = tools["set_heaters_fans"].description
+                for words in ("deck heaters", "patio", "outdoor", "exhaust fan", "bathroom"):
+                    self.assertIn(words, description)
+                names = tools["set_heaters_fans"].params["properties"]["devices"]["description"]
+                for name in ("Deck Heaters", "Powder Room Exhaust Fan", "Basement Master Ensuite Exhaust Fan"):
+                    self.assertIn(name, names)
+                if mode == "owner":
+                    self.assertNotIn("switch themselves off", description)
+                else:
+                    self.assertIn("switch themselves off after 2 hours", description)
+
+    def test_deck_heaters_by_any_name(self):
+        for text in ("deck heater", "the deck heaters", "patio heaters", "outdoor heaters", "outside heater",
+                     "heaters", "the heater on the deck", "Deck Heaters", "patio heat"):
+            with self.subTest(text=text):
+                self.broker.calls.clear()
+                answer = self.call("set_heaters_fans", {"action": "on", "devices": text})
+                self.assertTrue(answer["ok"], answer)
+                self.assertEqual(self.switched(), [("switch", "turn_on", self.HEATERS)])
+
+    def test_guest_turning_heaters_on_schedules_auto_off(self):
+        import datetime as dt
+
+        from device_control import worker
+        for mode in ("guest", "dashboard"):
+            with self.subTest(mode=mode):
+                from device_control import appliances
+                appliances.cancel_off(self.HEATERS)
+                self.assertEqual(self.call("set_heaters_fans", {"action": "on", "devices": "deck heaters"},
+                                           mode=mode),
+                                 {"ok": True, "result": "The Deck Heaters are on; they'll turn off at 9:40 PM."})
+                self.assertEqual(self.pending(), {self.HEATERS: (self.now + dt.timedelta(hours=2)).isoformat()})
+        self.states[self.HEATERS] = {"state": "on", "attributes": {}}
+        self.assertEqual(self.call("list_heaters_fans", {"devices": "deck heaters"})["result"],
+                         "Deck Heaters: on until 9:40 PM.")
+        self.broker.calls.clear()
+        import datetime as dt
+        self.now += dt.timedelta(minutes=119)
+        self.assertEqual(worker.tick(), [])
+        self.now += dt.timedelta(minutes=1)
+        self.failing = {self.HEATERS}
+        self.assertEqual(worker.tick(), [])  # HA refused: kept, retried next tick
+        self.assertEqual(list(self.pending()), [self.HEATERS])
+        self.failing = set()
+        self.assertEqual(worker.tick(), [self.HEATERS])
+        self.assertEqual(self.switched(), [("switch", "turn_off", self.HEATERS)] * 2)
+        self.assertEqual(self.pending(), {})
+
+    def test_owner_has_no_auto_off_and_clears_a_guest_one(self):
+        self.call("set_heaters_fans", {"action": "on", "devices": "deck heaters"})
+        self.assertEqual(list(self.pending()), [self.HEATERS])
+        self.assertEqual(self.call("set_heaters_fans", {"action": "on", "devices": "deck heaters"}, mode="owner"),
+                         {"ok": True, "result": "The Deck Heaters are on."})
+        self.assertEqual(self.pending(), {})
+
+    def test_turning_off_cancels_the_auto_off(self):
+        self.call("set_heaters_fans", {"action": "on", "devices": "patio heaters"})
+        self.assertEqual(self.call("set_heaters_fans", {"action": "off", "devices": "patio heaters"})["result"],
+                         "The Deck Heaters are off.")
+        self.assertEqual(self.pending(), {})
+
+    def test_auto_off_setting(self):
+        self.broker.settings[("device_control", "heater_auto_off_minutes")] = 45
+        self.assertEqual(self.call("set_heaters_fans", {"action": "on", "devices": "heaters"})["result"],
+                         "The Deck Heaters are on; they'll turn off at 8:25 PM.")
+
+    def test_auto_off_disabled(self):
+        self.broker.settings[("device_control", "heater_auto_off_minutes")] = 0
+        self.assertEqual(self.call("set_heaters_fans", {"action": "on", "devices": "heaters"})["result"],
+                         "The Deck Heaters are on.")
+        self.assertEqual(self.pending(), {})
+
+    def test_controls_page_takes_over_from_the_auto_off(self):
+        self.call("set_heaters_fans", {"action": "on", "devices": "deck heaters"})
+        with patch("device_control.views.call_service", return_value=(True, None)):
+            response = self.client.post(reverse("device_control_action"),
+                                        data=json.dumps({"entity_id": self.HEATERS, "action": "on", "type": "switch"}),
+                                        content_type="application/json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.pending(), {})
+
+    def test_fans(self):
+        self.assertEqual(self.call("set_heaters_fans", {"action": "on", "devices": "powder room fan"}),
+                         {"ok": True, "result": "The Powder Room Exhaust Fan is on."})
+        self.assertEqual(self.call("set_heaters_fans", {"action": "on", "devices": "ski room exhaust fan"})["result"],
+                         "The Ski Room Exhaust Fan is on.")
+        answer = self.call("set_heaters_fans", {"action": "on", "devices": "bathroom fan"})
+        self.assertFalse(answer["ok"])
+        self.assertIn("more than one floor", answer["error"])
+        self.assertIn("Master Bathroom Exhaust Fan", answer["error"])
+        self.assertEqual(self.switched(), [("switch", "turn_on", "switch.powder_room_exhaust_fan"),
+                                           ("switch", "turn_on", "switch.ski_room_exhaust_fan")])
+        self.assertEqual(self.pending(), {})  # fans have no auto-off
+        # "Turn the bathroom fan off" picks the one that's on.
+        self.states["switch.kids_bathroom_tub_exhaust_fan"] = {"state": "on", "attributes": {}}
+        self.broker.calls.clear()
+        self.assertEqual(self.call("set_heaters_fans", {"action": "off", "devices": "bathroom fan"})["result"],
+                         "The Kids Bathroom Tub Exhaust Fan is off.")
+        self.assertEqual(self.switched(), [("switch", "turn_off", "switch.kids_bathroom_tub_exhaust_fan")])
+        self.assertEqual(self.call("set_heaters_fans", {"action": "off", "devices": "all the fans"})["result"],
+                         "The Master Bathroom Exhaust Fan, Powder Room Exhaust Fan, Ski Room Exhaust Fan, "
+                         "Kids Bathroom Toilet Exhaust Fan, Kids Bathroom Tub Exhaust Fan and "
+                         "Basement Master Ensuite Exhaust Fan are off.")
+
+    def test_status(self):
+        self.states["switch.powder_room_exhaust_fan"] = {"state": "on", "attributes": {}}
+        self.states[self.HEATERS] = {"state": "unavailable", "attributes": {}}
+        self.assertEqual(self.call("list_heaters_fans")["result"],
+                         "Deck: Deck Heaters unavailable. Upper Floor: Master Bathroom Exhaust Fan off. "
+                         "Main Floor: Powder Room Exhaust Fan on, Ski Room Exhaust Fan off. Basement: Kids "
+                         "Bathroom Toilet Exhaust Fan off, Kids Bathroom Tub Exhaust Fan off, Basement Master "
+                         "Ensuite Exhaust Fan off.")
+        self.assertEqual(self.call("list_heaters_fans", {"devices": "patio heater"})["result"],
+                         "Deck Heaters: unavailable.")
+        self.assertEqual(self.switched(), [])
+
+    def test_unknown_and_excluded_names(self):
+        for text in ("hot tub", "TV power socket", "deck sonos amp"):
+            with self.subTest(text=text):
+                answer = self.call("set_heaters_fans", {"action": "off", "devices": text})
+                self.assertFalse(answer["ok"])
+                self.assertIn("no heaters or fans called", answer["error"])
+        self.assertEqual(self.switched(), [])
+
+    def test_home_assistant_down(self):
+        from device_control import assistant
+        self.broker.grants = ["settings.get", "tools.*", "state.*"]
+        self.assertEqual(self.call("list_heaters_fans"), {"ok": False, "error": assistant.HEATERS_FANS_DOWN})
+        self.assertEqual(self.call("set_heaters_fans", {"action": "on", "devices": "deck heaters"}),
+                         {"ok": False, "error": assistant.HEATERS_FANS_DOWN})
+        self.assertEqual(self.pending(), {})
+
+    def test_worker_starts_only_in_the_server(self):
+        from device_control import worker
+        self.assertTrue(worker.should_start(["/usr/lib/python3/site-packages/bdh_sdk/runtime/__main__.py"]))
+        self.assertFalse(worker.should_start(["manage.py", "test"]))
+        with patch.dict(os.environ, {"BDH_DEVICE_CONTROL_WORKER": "0"}):
+            self.assertFalse(worker.should_start(["/x/bdh_sdk/runtime/__main__.py"]))

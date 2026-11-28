@@ -14,6 +14,7 @@ from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_POST
 
+from . import appliances
 from .device_config import TABS, get_all_entity_ids
 from .ha_client import (
     HA_ERRORS,
@@ -174,6 +175,12 @@ def device_control_action(request):
         success, error = False, str(exc)
 
     if success:
+        if entity_id in appliances.AUTO_OFF_IDS:
+            # Someone used the Controls page: they decide now, not a guest's voice auto-off.
+            try:
+                appliances.cancel_off(entity_id)
+            except Exception:  # noqa: BLE001
+                logger.warning("Couldn't clear the auto-off of %s", entity_id, exc_info=True)
         return JsonResponse({"ok": True, "entity_id": entity_id, "action": action})
     else:
         return JsonResponse({"ok": False, "error": error}, status=502)

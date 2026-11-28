@@ -1,5 +1,5 @@
 from bdh_sdk import PluginSpec, Setting, Tile
-from bdh_sdk.plugins import LIFECYCLE_ALWAYS, NETWORK_NONE
+from bdh_sdk.plugins import INT, LIFECYCLE_ALWAYS, NETWORK_NONE
 
 spec = PluginSpec(
     id="device_control",
@@ -8,7 +8,8 @@ spec = PluginSpec(
     status="device_control.homepage.status",
     shortcuts="device_control.homepage.shortcuts",
     run_shortcut="device_control.homepage.run_shortcut",
-    # The assistant can list and activate scenes, list and move the blinds and list and switch the lights.
+    # The assistant can list and activate scenes, list and move the blinds, list and switch the
+    # lights (incl. the garage's) and the deck heaters and exhaust fans; not the TV/Sonos power.
     tools="device_control.assistant.tools",
     run_tool="device_control.assistant.run_tool",
     tiles=(
@@ -27,6 +28,17 @@ spec = PluginSpec(
             "Scenes to show",
             help="Comma-separated Home Assistant scene names for the Scenes tab "
                  "and homepage shortcuts. Empty shows every scene.",
+        ),
+        Setting(
+            "heater_auto_off_minutes",
+            "Deck heaters auto-off",
+            type=INT,
+            default=120,
+            minimum=0,
+            maximum=720,
+            unit="min",
+            help="When a guest turns the deck heaters on with the assistant, turn them off "
+                 "again after this many minutes. 0 leaves them on.",
         ),
     ),
     api_version=2,
@@ -51,7 +63,8 @@ spec = PluginSpec(
     # Home Assistant is reached through the hub broker; nothing else is needed.
     network=NETWORK_NONE,
     # Keeps the homepage lights status live (on_demand would let it go
-    # hours stale while the app sleeps).
+    # hours stale while the app sleeps), and the worker turns guest-on deck
+    # heaters off on time.
     lifecycle=LIFECYCLE_ALWAYS,
     memory_mb=96,
 )

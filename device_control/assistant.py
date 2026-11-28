@@ -1,14 +1,16 @@
-"""Assistant tools: Home Assistant scenes, the Shades tab's blinds and the Lights tab's lights.
+"""Assistant tools: Home Assistant scenes, the blinds, the lights (Lights and Garage tabs) and the
+deck heaters and exhaust fans (Deck and Fans tabs).
 
-They mirror the Scenes, Shades and Lights tabs and the homepage scene
-shortcuts, which every mode (guest, dashboard, owner) can use.
+They mirror those Controls tabs and the homepage scene shortcuts, which every mode (guest,
+dashboard, owner) can use. The TVs and Sonos tabs (power sockets and amp outlets) are left out on
+purpose: see :data:`NOT_FOR_ASSISTANT`.
 """
 import logging
 
-from bdh_sdk import ALL_MODES
+from bdh_sdk import ALL_MODES, OWNER
 from bdh_sdk.tools import MAX_ENUM, Tool, ToolError
 
-from . import blinds, lights
+from . import appliances, blinds, lights
 from .ha_client import HA_ERRORS
 from .matching import join as _join
 from .scenes import activate_scene, get_scenes
@@ -21,6 +23,31 @@ LIST_BLINDS = "list_blinds"
 SET_BLINDS = "set_blinds"
 LIST_LIGHTS = "list_lights"
 SET_LIGHTS = "set_lights"
+LIST_HEATERS_FANS = "list_heaters_fans"
+SET_HEATERS_FANS = "set_heaters_fans"
+
+# Controls-page devices no assistant tool reaches, in any mode: power for the TVs and their
+# soundbars (TVs tab) and the PDU outlets feeding the Sonos amps (Sonos tab). They are
+# infrastructure, not things a guest switches: turning one off leaves a TV or speakers dead
+# until someone finds the Controls page. Every other device on a tab must be reachable by a
+# tool (a test walks the tabs).
+NOT_FOR_ASSISTANT = frozenset({
+    "switch.living_room_tv_socket_1",
+    "switch.living_room_tv_socket_2",
+    "switch.master_bedroom_tv_socket_1",
+    "switch.master_bedroom_tv_socket_2",
+    "switch.basement_master_tv_socket_1",
+    "switch.media_room_tv_socket_1",
+    "switch.media_room_tv_socket_2",
+    "switch.office_tv_socket_1",
+    "switch.office_tv_socket_2",
+    "switch.pdu_audio_rack_dining_room_sonos",
+    "switch.pdu_audio_rack_basement_master_en_suite",
+    "switch.pdu_audio_rack_master_en_suite",
+    "switch.pdu_audio_rack_deck_sonos",
+    "switch.pdu_audio_rack_outlet_10",
+    "switch.pdu_audio_rack_outlet_9",
+})
 
 HA_DOWN = "Home Assistant isn't answering right now, so I can't reach the scenes. Try again in a minute."
 NO_SCENES = "There are no scenes set up."
@@ -35,6 +62,9 @@ NO_BRIGHTNESS = "Say how bright to make them: 1 to 100 percent, or 0 for off."
 LIGHT_ACTIONS = ("on", "off", "brightness")
 #: Up to this many lights list_lights names each one, on or off; past it only those not off.
 MAX_LISTED = 8
+HEATERS_FANS_DOWN = ("Home Assistant isn't answering right now, so I can't reach the heaters and fans. "
+                     "Try again in a minute.")
+SWITCH_ACTIONS = ("on", "off")
 
 
 def _scenes():
@@ -72,10 +102,32 @@ def _lights_param(required):
     return {"type": "string",
             "description": "Which lights, in the guest's words: a light's name (e.g. kitchen island "
                            "pendants, dining room chandelier), a room (living room, kitchen, stairs...), "
-                           "a floor (upstairs, main floor, downstairs/basement, outside), 'all', or "
+                           "a floor (upstairs, main floor, downstairs/basement, outside, garage), 'all', or "
                            "several separated by commas. Map 'here' or 'this room' to the room this "
                            "screen is in; if it could mean different rooms, ask first."
                            + ("" if required else " Leave it out for every light.")}
+
+
+def _heaters_fans_param(required):
+    return {"type": "string",
+            "description": "Which device, in the guest's words: 'deck heaters' (also patio, outdoor or "
+                           "outside heaters, or just 'the heaters'), an exhaust fan by room (powder room "
+                           "fan, ski room fan, master bathroom fan...), a floor, 'all the fans', or "
+                           "several separated by commas. If 'bathroom fan' could mean several, ask which."
+                           + (" They are: " + ", ".join(d["label"] for d in appliances.devices()) + "."
+                              if required else " Leave it out for all of them.")}
+
+
+def _auto_off_note(mode):
+    if mode == OWNER or not appliances.AUTO_OFF_IDS:
+        return ""
+    minutes = appliances.auto_off_minutes()
+    if not minutes:
+        return ""
+    span = f"{minutes // 60} hours" if minutes % 60 == 0 and minutes > 60 else (
+        "1 hour" if minutes == 60 else f"{minutes} minutes")
+    return (f" Turned on here, the deck heaters switch themselves off after {span}; tell the guest the "
+            "time the reply gives.")
 
 
 def tools(mode=None):
@@ -154,6 +206,28 @@ def tools(mode=None):
                                               "1 dimmest, 100 full; 0 is off"},
                 "lights": _lights_param(True),
             }, "required": ["action", "lights"]},
+            modes=ALL_MODES,
+        ),
+        Tool(
+            id=LIST_HEATERS_FANS,
+            title="List heaters and fans",
+            description="Say whether the deck heaters (the patio/outdoor heaters) and the bathroom "
+                        "exhaust fans are on or off, and when heaters that are on will switch "
+                        "themselves off.",
+            params={"type": "object", "properties": {"devices": _heaters_fans_param(False)}},
+            modes=ALL_MODES,
+            readonly=True,
+        ),
+        Tool(
+            id=SET_HEATERS_FANS,
+            title="Switch heaters and fans",
+            description="Turn the deck heaters (patio / outdoor / outside heaters on the deck) or an "
+                        "exhaust fan (bathroom, powder room, ski room) on or off. Not for lights "
+                        "(set_lights)." + _auto_off_note(mode),
+            params={"type": "object", "properties": {
+                "action": {"type": "string", "enum": list(SWITCH_ACTIONS), "description": "on or off"},
+                "devices": _heaters_fans_param(True),
+            }, "required": ["action", "devices"]},
             modes=ALL_MODES,
         ),
     ]
@@ -385,6 +459,99 @@ def _set_lights(args):
     return text
 
 
+def _device_states(items):
+    try:
+        states = appliances.states(items)
+    except HA_ERRORS as exc:
+        logger.warning("Heater/fan states for the assistant failed: %s", exc)
+        raise ToolError(HEATERS_FANS_DOWN) from None
+    if not states:
+        raise ToolError(HEATERS_FANS_DOWN)
+    return states
+
+
+def _device_text(d, state, due):
+    text = lights.state_text(state)
+    at = due.get(d["entity_id"])
+    if at is not None and appliances.is_on(state):
+        text += f" until {appliances.clock(at)}"
+    return text
+
+
+def _list_heaters_fans(args):
+    try:
+        items = appliances.resolve(args.get("devices") or "all", strict=False)
+    except appliances.NoMatch as exc:
+        raise ToolError(str(exc)) from None
+    states = _device_states(items)
+    due = appliances.pending()
+    texts = {d["entity_id"]: _device_text(d, states.get(d["entity_id"]), due) for d in items}
+    if len(items) == 1:
+        return f"{items[0]['label']}: {texts[items[0]['entity_id']]}."
+    lines = [f"{floor}: " + ", ".join(f"{d['label']} {texts[d['entity_id']]}"
+                                       for d in items if d["floor"] == floor) + "."
+             for floor in dict.fromkeys(d["floor"] for d in items)]
+    if all(t == "off" for t in texts.values()):
+        lines.insert(0, "All off.")
+    return " ".join(lines)
+
+
+def _set_heaters_fans(args, mode):
+    on = args["action"] == "on"
+    try:
+        items = appliances.resolve(args["devices"])
+    except appliances.NoMatch as exc:
+        raise ToolError(str(exc)) from None
+    except appliances.Ambiguous as exc:
+        # Turning off is unambiguous when only one floor's matches are on.
+        if on:
+            raise ToolError(str(exc)) from None
+        states = _device_states(exc.matches)
+        lit = [d for d in exc.matches if appliances.is_on(states.get(d["entity_id"]))]
+        if not lit:
+            return "They're already off."
+        if len({d["floor"] for d in lit}) > 1:
+            raise ToolError(str(exc)) from None
+        items = lit
+    failed = []
+    for d in items:
+        try:
+            ok, err = appliances.switch(d, on)
+        except HA_ERRORS as exc:
+            logger.warning("%s %s failed: %s", d["entity_id"], args["action"], exc)
+            raise ToolError(HEATERS_FANS_DOWN) from None
+        if not ok:
+            logger.warning("%s %s failed: %s", d["entity_id"], args["action"], err)
+            failed.append(d)
+    if len(failed) == len(items):
+        raise ToolError(f"Home Assistant couldn't switch {_light_names(items)[0]}.")
+    done = [d for d in items if d not in failed]
+    timed = []
+    for d in done:
+        if d["entity_id"] not in appliances.AUTO_OFF_IDS:
+            continue
+        if on and mode != OWNER:
+            at = appliances.schedule_off(d["entity_id"])
+            if at is not None:
+                timed.append(d)
+        else:
+            # Off, or the owner turning it on: no auto-off pending.
+            appliances.cancel_off(d["entity_id"])
+    named, plural = _light_names(done)
+    text = f"{_cap(named)} {'are' if plural else 'is'} {'on' if on else 'off'}."
+    if timed:
+        when = appliances.clock(at)
+        if timed == done:
+            text = text[:-1] + f"; {'they' if plural else 'it'}'ll turn off at {when}."
+        else:
+            t_named, _ = _light_names(timed)
+            text += f" {_cap(t_named)} will turn off at {when}."
+    if failed:
+        named, plural = _light_names(failed)
+        text += f" {_cap(named)} didn't respond."
+    return text
+
+
 def run_tool(tool_id, args, mode=None):
     if tool_id == LIST_SCENES:
         names = _names(_scenes())
@@ -413,4 +580,8 @@ def run_tool(tool_id, args, mode=None):
         return _list_lights(args)
     if tool_id == SET_LIGHTS:
         return _set_lights(args)
+    if tool_id == LIST_HEATERS_FANS:
+        return _list_heaters_fans(args)
+    if tool_id == SET_HEATERS_FANS:
+        return _set_heaters_fans(args, mode)
     raise ToolError(f"Unknown tool {tool_id!r}")
