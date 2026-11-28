@@ -1,14 +1,16 @@
-"""The Lights tab's lights, found by loose names for the assistant.
+"""The Lights and Garage tabs' lights, found by loose names for the assistant.
 
 Light names repeat across rooms ("Main Lights", "Chandelier"), so each light
 is labelled "<room> <name>" ("Living Room Main Lights") and a room ("living
 room lights") targets every light in it. Matching is shared with the blinds
 (:mod:`device_control.matching`).
 """
-from .device_config import LIGHT_DEVICES
+from .device_config import GARAGE_DEVICES, LIGHT_DEVICES
 from .ha_client import call_service, get_entity_states
 from .matching import Ambiguous, Catalog, NoMatch  # noqa: F401
 
+# The Lights tab, then the Garage tab's lights (a switch and a light) as one more floor.
+GROUPS = {**LIGHT_DEVICES, **GARAGE_DEVICES}
 # Words that never tell lights apart.
 DEVICE_WORDS = frozenset({"light", "lamp", "lighting", "bulb", "fixture"})
 # Other names for the floors (the LIGHT_DEVICES groups). Not plain "main":
@@ -18,6 +20,7 @@ FLOOR_ALIASES = {
     "Main Floor": ("main floor", "main level", "ground floor"),
     "Basement": ("basement", "downstairs", "lower floor", "lower level"),
     "Exterior": ("exterior", "outside", "outdoor", "outdoors"),
+    "Garage": ("garage",),
 }
 ROOM_ALIASES = {
     "great room": ("kitchen", "living room"),
@@ -30,14 +33,14 @@ ROOM_ALIASES = {
 #: A no-match message names every light only up to this many.
 LIST_LIMIT = 20
 
-CATALOG = Catalog("lights", LIGHT_DEVICES, device_words=DEVICE_WORDS, floor_aliases=FLOOR_ALIASES,
+CATALOG = Catalog("lights", GROUPS, device_words=DEVICE_WORDS, floor_aliases=FLOOR_ALIASES,
                   room_aliases=ROOM_ALIASES, list_limit=LIST_LIMIT)
 # HA colour modes without brightness (any other mode dims).
 _NO_DIM_MODES = {"onoff", "unknown"}
 
 
 def lights():
-    """Every light on the Lights tab as dicts in page order (``label`` is unique)."""
+    """Every light on the Lights and Garage tabs as dicts in page order (``label`` is unique)."""
     return CATALOG.items()
 
 

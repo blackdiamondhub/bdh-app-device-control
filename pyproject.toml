@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bdh-app-device-control"
-version = "2.5.0b1"
-description = "Black Diamond Hub app: lodge device controls (scenes, lights, blinds) via Home Assistant"
+version = "2.6.0b1"
+description = "Black Diamond Hub app: lodge device controls (scenes, lights, blinds, heaters, fans) via Home Assistant"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
